@@ -14,13 +14,13 @@ case "$file" in
     # El formato no es una decisión del agente: se aplica siempre.
     gofmt -w "$file"
     if ! out=$(cd backend && go vet ./... 2>&1); then
-      printf 'go vet falló después de editar %s:\n%s\n' "$file" "$out" >&2
+      printf 'go vet falló después de editar %s:\n%s\n' "$file" "$(tail -n 40 <<<"$out")" >&2
       exit 2
     fi
     ;;
   */frontend/*.ts | */frontend/*.tsx)
     if ! out=$(cd frontend && npx eslint "$file" 2>&1); then
-      printf 'eslint falló en %s:\n%s\n' "$file" "$out" >&2
+      printf 'eslint falló en %s:\n%s\n' "$file" "$(tail -n 40 <<<"$out")" >&2
       exit 2
     fi
     ;;

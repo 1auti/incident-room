@@ -1,15 +1,14 @@
 ---
 description: Implementa un caso de uso a partir de su spec (ej. /implement-uc UC-04)
 ---
-Implementá el caso de uso $ARGUMENTS siguiendo el flujo de AGENTS.md:
+Implementá el caso de uso $ARGUMENTS siguiendo el flujo de AGENTS.md (no lo repitas acá; aplican también sus límites y `make verify`).
 
-1. Leé el spec en `specs/` cuyo nombre empieza con $ARGUMENTS, `docs/domain.md` y el código relacionado.
+Específico de este comando, en este orden:
+1. Leé el spec en `specs/` cuyo nombre empieza con $ARGUMENTS, las reglas BR-xx que lista en `docs/domain.md` y el código relacionado.
    Si el spec no existe o es ambiguo, frená y preguntá.
-2. Proponé un plan: archivos a tocar, qué test prueba cada criterio de aceptación y riesgos.
+2. Plan: además de archivos y riesgos, indicá qué test prueba cada criterio de aceptación.
    Esperá mi aprobación antes de escribir código.
-3. Implementá lo mínimo para cumplir los criterios. Para reglas de negocio, escribí el test primero.
-4. `make verify` tiene que pasar.
-5. Si el caso tiene UI, validá cada criterio de aceptación con Playwright MCP.
-6. Pedile al subagente `reviewer` que revise el diff. Resolvé todo lo BLOQUEANTE.
-7. Agregá una entrada en `docs/bitacora.md` con el formato definido en ese archivo.
-8. Proponé el mensaje de commit: `feat($ARGUMENTS): ...`.
+3. Para reglas de negocio, escribí el test primero.
+4. Con `make verify` en verde: si el caso tiene UI, validá cada criterio de aceptación con Playwright MCP.
+5. Pedile al subagente `reviewer` que revise el diff y resolvé todo lo BLOQUEANTE.
+6. Agregá la entrada en `docs/bitacora.md` y proponé el mensaje de commit `feat($ARGUMENTS): ...`.

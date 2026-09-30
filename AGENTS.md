@@ -6,7 +6,7 @@ Reglas específicas por lenguaje: `backend/AGENTS.md`, `frontend/AGENTS.md`.
 ## Fuentes de verdad (en este orden)
 1. `specs/UC-XX-*.md`: qué hace cada caso de uso y sus criterios de aceptación.
 2. `docs/domain.md`: reglas de negocio con ID (BR-xx): severidades, SLA, transiciones.
-3. `docs/ARCHITECTURE.md`: componentes y decisiones.
+3. `docs/ARCHITECTURE.md`: componentes y decisiones (pendiente: aún no existe; no lo busques).
 Si una tarea no está cubierta por estas fuentes o las contradice, frená y preguntá.
 No inventes reglas de negocio.
 
