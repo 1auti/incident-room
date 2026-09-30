@@ -33,3 +33,13 @@ Una entrada por iteración relevante. Es la materia prima del README.
 - **Ajuste a las reglas de contexto:** ninguno.
 
 ---
+
+### 2026-09-29 — Herramientas — Optimización de tokens
+- **Herramienta / agente:** Claude Code (orquestador + explorador + escritor)
+- **Prompt o comando:** "me gustaria que trabajes para optimizar el uso de tokens…"
+- **Qué propuso el agente:** medir primero (`~/.claude/CLAUDE.md` 66 KB, `opencode.json` 166 KB con un prompt de orquestador de 90 KB, reglas del proyecto ~4 KB) y actuar solo dentro del repo: el hook Stop verifica únicamente cuando cambian fuentes (`backend/`, `frontend/`, `Makefile`, `.claude/hooks/`, `.githooks/`), acotar a 40 líneas la salida de `post-edit.sh`, deduplicar `implement-uc.md` y `reviewer.md` contra `AGENTS.md`, marcar `docs/ARCHITECTURE.md` como pendiente y documentar todo en `docs/optimizacion-tokens.md`. Lo que exige decisión del usuario (recortar la config global, fijar `@playwright/mcp`, arreglar el MCP `postgres`, targets de `Makefile`) quedó como recomendación, sin aplicar.
+- **Qué falló y qué capa lo detectó:** el hook Stop inyectaba un error en cada turno con cambios solo de documentación y sin `go.mod`. Lo detectó el propio hook y el feedback repetido del usuario.
+- **Corrección / decisión:** el disparo del hook Stop pasa de "cualquier archivo sucio" a "cambio pendiente en fuentes"; con fuentes modificadas `make verify` corre completo, sin debilitar la verificación.
+- **Ajuste a las reglas de contexto:** `AGENTS.md` línea 9 (ARCHITECTURE.md pendiente); hooks y comandos de `.claude` deduplicados.
+
+---
