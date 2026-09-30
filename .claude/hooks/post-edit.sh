@@ -19,8 +19,8 @@ case "$file" in
     fi
     ;;
   */frontend/*.ts | */frontend/*.tsx)
-    if ! out=$(cd frontend && npx eslint "$file" 2>&1); then
-      printf 'eslint falló en %s:\n%s\n' "$file" "$(tail -n 40 <<<"$out")" >&2
+    if ! out=$(cd frontend && npx oxlint "$file" 2>&1); then
+      printf 'oxlint falló en %s:\n%s\n' "$file" "$(tail -n 40 <<<"$out")" >&2
       exit 2
     fi
     ;;
