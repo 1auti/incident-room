@@ -23,3 +23,13 @@ Una entrada por iteración relevante. Es la materia prima del README.
 - **Ajuste a las reglas de contexto:** ninguno todavía.
 
 ---
+
+### 2026-09-29 — Diseño — Resolución de las 14 preguntas abiertas
+- **Herramienta / agente:** Claude Code (orquestador decide en `docs/domain.md` + subagente escritor en specs)
+- **Prompt o comando:** "las 14 preguntas las tenés que resolver vos" (el usuario delegó las decisiones)
+- **Qué propuso el agente:** decidir las 14 preguntas y dejarlas incorporadas en las reglas, con el mapa PA → decisión → regla en la sección 6 de `docs/domain.md`. Decisiones clave: regla nueva BR-19 (registro con rol inicial `ingeniero`, email único, solo el admin promueve, primer admin desde variables de entorno); BR-02 congela la severidad desde `resuelto` para que nadie baje un SEV1 y esquive el postmortem de BR-07; BR-11 reasigna los incidentes activos y registra un evento `asignacion` cuando el admin cambia el on-call; BR-13 define que genera y edita el on-call del servicio o el admin (solo con el incidente `resuelto`) y aprueba solo el admin; BR-04 escala a todos los admins con indicador "Escalado" y sin email; BR-12 hace la baja de runbooks física y elimina su embedding; métricas con período por defecto de 30 días (MTTR por `resolved_at`, conteo y SLA por `declared_at`). Luego el subagente escritor actualizó los 10 specs: sin referencias `PA-xx`, criterios y listas de BR alineados con las reglas, y nombres de tests unitarios ajustados (por ejemplo `TestBR19_...`, `TestBR13_...`).
+- **Qué falló y qué capa lo detectó:** el hook Stop (`make verify`) falla porque `backend/` todavía no tiene `go.mod`. Es esperable en la etapa de diseño y a propósito no se "arregló", para no empezar código ni debilitar la verificación.
+- **Corrección / decisión:** las decisiones quedaron en `docs/domain.md` sección 6 como delegadas y revisables: al cambiar una, se actualizan la regla y los specs que la citan.
+- **Ajuste a las reglas de contexto:** ninguno.
+
+---
