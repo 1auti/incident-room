@@ -27,6 +27,42 @@ permissions:
   - action: shell
     resource: "git rebase *"
     effect: deny
+  - action: shell
+    resource: "git restore *"
+    effect: deny
+  - action: shell
+    resource: "git clean *"
+    effect: deny
+  - action: shell
+    resource: "git stash *"
+    effect: deny
+  - action: shell
+    resource: "git config *"
+    effect: deny
+  - action: shell
+    resource: "git -C *"
+    effect: deny
+  - action: shell
+    resource: "rm *"
+    effect: deny
+  - action: shell
+    resource: "curl *"
+    effect: deny
+  - action: shell
+    resource: "wget *"
+    effect: deny
+  - action: shell
+    resource: "bash *"
+    effect: deny
+  - action: shell
+    resource: "sh *"
+    effect: deny
+  - action: shell
+    resource: "*.env*"
+    effect: deny
+  - action: read
+    resource: ".env*"
+    effect: deny
 ---
 Sos el ejecutor. Claude Code orquesta y ya aprobó el plan: implementá SOLO lo que dicen el plan y el spec que recibís, nada extra.
 
