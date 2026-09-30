@@ -21,4 +21,5 @@ Ruta: T1+T2 delegated (2 archivos no triviales, un solo writer); T3 y T4 del par
 - T1+T2 escritos por un writer delegado; el parent leyó ambos archivos completos y `git status` mostró solo los 3 archivos esperados.
 - T3 (parent, `opencode run --agent executor --format json`): `mode: subagent` es aceptado por `--agent`; `git commit --dry-run` → "Permission denied: shell"; escribir `.env.smoketest` → "Permission denied: edit"; `git status -s` y `make -n verify` → completados (el shell no está bloqueado entero). Sin archivos residuales.
 - Límite conocido: la lectura de `.env` solo está bloqueada por el prompt (la doc v2 consultada no muestra una acción `read`).
+- Revisión nativa (RDD): riesgo `high` (por `db/dev/init-agent-ro.sh`, rango desde `56be6ad`, 8 archivos / 133 líneas); consentimiento concedido, 4 lentes, aprobada sin correcciones, acuse ejecutado (autoridad quemada). 12 hallazgos no bloqueantes (0 blockers).
 - No verificado: calidad de `opencode/big-pickle` implementando código real; el smoke test solo prueba permisos.
