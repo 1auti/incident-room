@@ -12,7 +12,7 @@
 - [x] T1 `.opencode/agents/executor.md`: implementa solo el plan aprobado, corre `make verify`; `deny` para `git commit`, `git push` y `.env`.
 - [x] T2 `.claude/commands/delegate.md`: contrato del lado de Claude (spec + plan → `opencode run --agent executor --format json` → revisión del diff con `reviewer`).
 - [x] T3 Smoke test: confirmar si `--agent` acepta un agente `subagent` y que los `deny` se respetan; si no, pasar a `mode: primary`.
-- [x] T4 Entrada en `docs/bitacora.md` y commit `feat(tooling): ...` (commit `aefd4f1`; el pre-commit `make verify` pasó).
+- [x] T4 Entrada en `docs/bitacora.md` y commit `feat(tooling): ...` (commit `aefd4f1`). Corrección: acá había escrito que el pre-commit pasó, y era falso: `core.hooksPath` no estaba configurado, así que ese commit no pasó por `make verify`. El árbol resultante sí da exit 0 al correrlo a mano, y el hook se activó después con `make setup`.
 - [x] T5 Endurecer `executor.md` tras la revisión nativa (R1-002, R3 `.env`): `read` de `.env*` en `deny` y más `shell` en `deny` (`rm`, `curl`, `wget`, `git restore/clean/stash/-C/config`, `bash`/`sh`); verificar con smoke test. Corregir el alcance declarado (R2-scope-mismatch).
 
 Ruta: T1+T2 delegated (2 archivos no triviales, un solo writer); T3 y T4 del parent.
