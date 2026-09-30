@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Puerta independiente de la herramienta: aplica igual a Claude Code, opencode o edición manual.
+exec make verify
