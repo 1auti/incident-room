@@ -15,7 +15,7 @@
 - [x] T2 Ejecutar `opencode run --agent executor --format json "<prompt>"` con timeout largo.
 - [x] T3 Verificación del parent: `git status`, `git diff`, comprobar test primero y alcance, `make verify`.
 - [x] T4 Revisión con el subagente `reviewer` (Sonnet); resolver lo BLOQUEANTE (sin bloqueantes; 5 mejoras opcionales sin aplicar por el límite "solo lo que pide el spec").
-- [ ] T5 Entrada en `docs/bitacora.md` y commit `feat(UC-02): ...`.
+- [x] T5 Entrada en `docs/bitacora.md` y commit `feat(UC-02): ...` (commit `f10c384`; esta vez el pre-commit `make verify` corrió de verdad y pasó).
 
 Ruta: T1 delegated (Opus, solo lectura); T2 delegated al ejecutor externo; T3 y T5 del parent; T4 delegated (Sonnet).
 
