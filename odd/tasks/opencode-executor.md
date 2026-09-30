@@ -12,7 +12,7 @@
 - [x] T1 `.opencode/agents/executor.md`: implementa solo el plan aprobado, corre `make verify`; `deny` para `git commit`, `git push` y `.env`.
 - [x] T2 `.claude/commands/delegate.md`: contrato del lado de Claude (spec + plan → `opencode run --agent executor --format json` → revisión del diff con `reviewer`).
 - [x] T3 Smoke test: confirmar si `--agent` acepta un agente `subagent` y que los `deny` se respetan; si no, pasar a `mode: primary`.
-- [ ] T4 Entrada en `docs/bitacora.md` y commit `feat(tooling): ...`.
+- [x] T4 Entrada en `docs/bitacora.md` y commit `feat(tooling): ...` (commit `aefd4f1`; el pre-commit `make verify` pasó).
 
 Ruta: T1+T2 delegated (2 archivos no triviales, un solo writer); T3 y T4 del parent.
 
