@@ -14,8 +14,8 @@ Permitir que el administrador dé de alta, edite y dé de baja los servicios sob
 
 ## Criterios de aceptación
 - **UC-11.1** Dado un `admin` autenticado, cuando crea un servicio con un nombre no utilizado y una criticidad válida, entonces el servicio existe con esa criticidad y sin on-call (BR-12, BR-01).
-- **UC-11.2** Dado un `admin` autenticado, cuando crea un servicio con nombre vacío, con un nombre ya utilizado o con una criticidad fuera de `critica`, `importante` y `estandar`, entonces recibe un error de validación y no se crea ningún servicio.
-- **UC-11.3** Dado un servicio existente, cuando un `admin` cambia su nombre a uno no utilizado o su criticidad a un valor válido, entonces el cambio queda guardado; si el nombre ya lo usa otro servicio o la criticidad no es válida, entonces recibe un error de validación y el servicio no cambia (BR-12, BR-01).
+- **UC-11.2** Dado un `admin` autenticado, cuando crea un servicio con nombre vacío, con un nombre ya utilizado (sin distinguir mayúsculas) o con una criticidad fuera de `critica`, `importante` y `estandar`, entonces recibe un error de validación y no se crea ningún servicio.
+- **UC-11.3** Dado un servicio existente, cuando un `admin` cambia su nombre a uno no utilizado o su criticidad a un valor válido, entonces el cambio queda guardado; si el nombre ya lo usa otro servicio (sin distinguir mayúsculas) o la criticidad no es válida, entonces recibe un error de validación y el servicio no cambia (BR-12, BR-01).
 - **UC-11.4** Dado un `ingeniero` o un `oncall`, cuando intenta crear, editar o dar de baja un servicio, entonces la acción es prohibida y no se produce ningún cambio; sin sesión, la respuesta es de no autenticado (BR-12, BR-10).
 - **UC-11.5** Dado un servicio sin incidentes ni runbooks, cuando un `admin` lo da de baja, entonces el servicio deja de existir (BR-12, BR-20).
 - **UC-11.6** Dado un servicio con al menos un incidente (en cualquier estado) o un runbook, cuando un `admin` intenta darlo de baja, entonces la baja es rechazada con un error y el servicio sigue existiendo sin cambios (BR-20).

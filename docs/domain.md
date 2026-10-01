@@ -21,7 +21,7 @@ Convenciones: los identificadores son UUID; todo instante se guarda en UTC (`tim
 | Campo | Tipo | Notas |
 |---|---|---|
 | id | UUID | |
-| name | texto | único, obligatorio |
+| name | texto | único (sin distinguir mayúsculas), obligatorio |
 | criticality | enum `critica` \| `importante` \| `estandar` | obligatorio; lo fija el admin (BR-01, BR-12) |
 | oncall_user_id | UUID → User, nullable | único on-call del servicio; debe tener rol `oncall`; lo asigna el admin (BR-11) |
 
@@ -260,3 +260,4 @@ Las 14 preguntas de la primera versión las resolvió el agente por delegación 
 | — | ¿Regenerar un borrador genera evento? (hallado al escribir specs) | Sí; editar el texto no | BR-09 |
 | — | ¿Se puede quitar el rol `oncall` a quien es on-call de un servicio? (hallado al escribir specs) | No, primero se reasigna el servicio | BR-19 |
 | — | ¿Qué pasa al dar de baja un servicio que ya tiene incidentes o runbooks? (hallado al planificar UC-02; decidido por el usuario el 2026-09-30) | Se rechaza la baja; solo se da de baja un servicio sin incidentes ni runbooks | BR-20 |
+| — | ¿La unicidad del nombre de servicio distingue mayúsculas? (decidido por el usuario el 2026-10-01) | No distingue; se guarda como se escribió y se compara sin mayúsculas | BR-12 (entidad Service) |

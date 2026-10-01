@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/httpapi"
+	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/user"
 )
 
@@ -93,20 +96,91 @@ func (f *fakeSessions) FindByTokenHash(_ context.Context, h string) (auth.Sessio
 	return s, nil
 }
 
+type fakeServiceRepo struct {
+	mu        sync.Mutex
+	list      []service.Service
+	withDeps  map[string]bool // services that have incidents or runbooks (BR-20)
+	nextIndex int
+}
+
+func (f *fakeServiceRepo) List(context.Context) ([]service.Service, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]service.Service(nil), f.list...), nil
+}
+
+func (f *fakeServiceRepo) nameUsed(name, exceptID string) bool {
+	for _, s := range f.list {
+		if s.ID != exceptID && strings.EqualFold(s.Name, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeServiceRepo) Create(_ context.Context, name string, c incident.Criticality) (service.Service, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.nameUsed(name, "") {
+		return service.Service{}, service.ErrNameTaken
+	}
+	f.nextIndex++
+	s := service.Service{ID: fmt.Sprintf("svc-%d", f.nextIndex), Name: name, Criticality: c}
+	f.list = append(f.list, s)
+	return s, nil
+}
+
+func (f *fakeServiceRepo) Update(_ context.Context, id, name string, c incident.Criticality) (service.Service, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.list {
+		if f.list[i].ID != id {
+			continue
+		}
+		if f.nameUsed(name, id) {
+			return service.Service{}, service.ErrNameTaken
+		}
+		f.list[i].Name, f.list[i].Criticality = name, c
+		return f.list[i], nil
+	}
+	return service.Service{}, service.ErrNotFound
+}
+
+func (f *fakeServiceRepo) Delete(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.list {
+		if f.list[i].ID == id {
+			f.list = append(f.list[:i], f.list[i+1:]...)
+			return nil
+		}
+	}
+	return service.ErrNotFound
+}
+
+func (f *fakeServiceRepo) HasIncidents(_ context.Context, id string) (bool, error) {
+	return f.withDeps[id], nil
+}
+
+func (f *fakeServiceRepo) HasRunbooks(context.Context, string) (bool, error) { return false, nil }
+
 type env struct {
 	h        http.Handler
 	users    *fakeUsers
 	sessions *fakeSessions
 	usersSvc *user.Service
+	services *fakeServiceRepo
 }
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	users := &fakeUsers{}
 	sessions := &fakeSessions{m: map[string]auth.Session{}}
+	services := &fakeServiceRepo{withDeps: map[string]bool{}}
 	us := user.NewService(users)
 	as := auth.NewService(users, sessions, time.Hour, time.Now)
-	return &env{h: httpapi.New(us, as, slog.New(slog.NewTextHandler(io.Discard, nil))), users: users, sessions: sessions, usersSvc: us}
+	h := httpapi.New(us, as, service.NewManager(services), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services}
 }
 
 func (e *env) do(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -256,5 +330,183 @@ func TestBR12_SoloAdminCambiaRol(t *testing.T) {
 	}
 	if w := e.do("PATCH", "/api/users/nope/role", `{"role":"oncall"}`, admin); w.Code != http.StatusNotFound {
 		t.Errorf("unknown user status = %d, want 404", w.Code)
+	}
+}
+
+// cookies registers one user per role and returns their session cookies.
+func (e *env) cookies(t *testing.T) (admin, eng, oncall *http.Cookie) {
+	t.Helper()
+	ctx := context.Background()
+	if err := e.usersSvc.EnsureAdmin(ctx, "root@x.com", "admin-pass"); err != nil {
+		t.Fatal(err)
+	}
+	e.register(t, "Ana", "ana@x.com")
+	e.register(t, "Oli", "oli@x.com")
+	if err := e.users.UpdateRole(ctx, "id-oli@x.com", user.RoleOncall); err != nil {
+		t.Fatal(err)
+	}
+	return e.loginCookie(t, "root@x.com", "admin-pass"), e.loginCookie(t, "ana@x.com", "secret-pass"), e.loginCookie(t, "oli@x.com", "secret-pass")
+}
+
+func (e *env) listServices(t *testing.T, c *http.Cookie) []map[string]any {
+	t.Helper()
+	w := e.do("GET", "/api/services", "", c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status = %d", w.Code)
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func (e *env) createService(t *testing.T, c *http.Cookie, name string) string {
+	t.Helper()
+	w := e.do("POST", "/api/services", `{"name":"`+name+`","criticality":"importante"}`, c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body %s", w.Code, w.Body)
+	}
+	var s map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &s)
+	return s["id"].(string)
+}
+
+func TestUC111_CrearServicio(t *testing.T) {
+	e := newEnv(t)
+	admin, _, _ := e.cookies(t)
+	w := e.do("POST", "/api/services", `{"name":"Pagos","criticality":"critica"}`, admin)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["name"] != "Pagos" || got["criticality"] != "critica" {
+		t.Errorf("body = %v", got)
+	}
+	if v, ok := got["oncall_user_id"]; !ok || v != nil {
+		t.Errorf("oncall_user_id = %v (present %v), want explicit null", v, ok)
+	}
+}
+
+func TestUC112_ValidacionAlCrear(t *testing.T) {
+	e := newEnv(t)
+	admin, _, _ := e.cookies(t)
+	e.createService(t, admin, "Pagos")
+	for body, want := range map[string]int{
+		`{"name":"","criticality":"critica"}`:  http.StatusBadRequest,
+		`{"name":"X","criticality":"CRITICA"}`: http.StatusBadRequest,
+		`{"name":"X"}`:                         http.StatusBadRequest,
+		`{`:                                    http.StatusBadRequest,
+		`{"name":"pagos","criticality":"estandar"}`: http.StatusConflict,
+	} {
+		w := e.do("POST", "/api/services", body, admin)
+		if w.Code != want || !strings.Contains(w.Body.String(), `"error"`) {
+			t.Errorf("body %q status = %d (%s), want %d with JSON error", body, w.Code, w.Body, want)
+		}
+	}
+	if got := e.listServices(t, admin); len(got) != 1 {
+		t.Errorf("services = %d, want 1", len(got))
+	}
+}
+
+func TestUC113_EditarServicio(t *testing.T) {
+	e := newEnv(t)
+	admin, _, _ := e.cookies(t)
+	id := e.createService(t, admin, "Pagos")
+	e.createService(t, admin, "Auth")
+	path := "/api/services/" + id
+
+	w := e.do("PUT", path, `{"name":"Cobros","criticality":"estandar"}`, admin)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"Cobros"`) {
+		t.Fatalf("update status = %d, body %s", w.Code, w.Body)
+	}
+	if w := e.do("PUT", path, `{"name":"auth","criticality":"estandar"}`, admin); w.Code != http.StatusConflict {
+		t.Errorf("duplicate status = %d, want 409", w.Code)
+	}
+	if w := e.do("PUT", path, `{"name":"Cobros","criticality":"alta"}`, admin); w.Code != http.StatusBadRequest {
+		t.Errorf("invalid criticality status = %d, want 400", w.Code)
+	}
+	if w := e.do("PUT", "/api/services/nope", `{"name":"Z","criticality":"estandar"}`, admin); w.Code != http.StatusNotFound {
+		t.Errorf("unknown id status = %d, want 404", w.Code)
+	}
+	for _, s := range e.listServices(t, admin) {
+		if s["id"] == id && (s["name"] != "Cobros" || s["criticality"] != "estandar") {
+			t.Errorf("service changed by rejected update: %v", s)
+		}
+	}
+}
+
+func TestUC114_SoloAdminGestiona(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+	id := e.createService(t, admin, "Pagos")
+	for name, c := range map[string]*http.Cookie{"ingeniero": eng, "oncall": oncall, "sin sesion": nil} {
+		want := http.StatusForbidden
+		if c == nil {
+			want = http.StatusUnauthorized
+		}
+		for _, tc := range []struct{ method, path, body string }{
+			{"POST", "/api/services", `{"name":"Otro","criticality":"estandar"}`},
+			{"PUT", "/api/services/" + id, `{"name":"Otro","criticality":"estandar"}`},
+			{"DELETE", "/api/services/" + id, ""},
+		} {
+			if w := e.do(tc.method, tc.path, tc.body, c); w.Code != want {
+				t.Errorf("%s %s %s status = %d, want %d", name, tc.method, tc.path, w.Code, want)
+			}
+		}
+	}
+	got := e.listServices(t, admin)
+	if len(got) != 1 || got[0]["name"] != "Pagos" || got[0]["criticality"] != "importante" {
+		t.Errorf("services changed by denied actions: %v", got)
+	}
+}
+
+func TestUC115_BajaSinDependencias(t *testing.T) {
+	e := newEnv(t)
+	admin, _, _ := e.cookies(t)
+	id := e.createService(t, admin, "Pagos")
+	if w := e.do("DELETE", "/api/services/"+id, "", admin); w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
+	}
+	if got := e.listServices(t, admin); len(got) != 0 {
+		t.Errorf("services = %v, want none", got)
+	}
+}
+
+func TestUC116_BajaRechazadaConDependencias(t *testing.T) {
+	e := newEnv(t)
+	admin, _, _ := e.cookies(t)
+	id := e.createService(t, admin, "Pagos")
+	e.services.withDeps[id] = true
+	w := e.do("DELETE", "/api/services/"+id, "", admin)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"error"`) {
+		t.Fatalf("status = %d (%s), want 409", w.Code, w.Body)
+	}
+	if got := e.listServices(t, admin); len(got) != 1 {
+		t.Errorf("service removed despite dependencies")
+	}
+}
+
+func TestUC117_ListaParaTodoAutenticado(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+	e.createService(t, admin, "Pagos")
+	for name, c := range map[string]*http.Cookie{"admin": admin, "ingeniero": eng, "oncall": oncall} {
+		got := e.listServices(t, c)
+		if len(got) != 1 || got[0]["name"] != "Pagos" || got[0]["criticality"] != "importante" {
+			t.Errorf("%s list = %v", name, got)
+		}
+	}
+	if w := e.do("GET", "/api/services", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("no session status = %d, want 401", w.Code)
+	}
+}
+
+func TestUC117_ListaVaciaEsArray(t *testing.T) {
+	e := newEnv(t)
+	admin, _, _ := e.cookies(t)
+	if body := strings.TrimSpace(e.do("GET", "/api/services", "", admin).Body.String()); body != "[]" {
+		t.Errorf("body = %s, want []", body)
 	}
 }
