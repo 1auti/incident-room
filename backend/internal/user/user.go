@@ -21,6 +21,9 @@ var (
 	ErrEmailTaken = errors.New("email already registered")
 	ErrNotFound   = errors.New("user not found")
 	ErrForbidden  = errors.New("forbidden")
+	// ErrAdminEmailTaken: the configured admin email belongs to an existing
+	// non-admin user. Existing users are never promoted (BR-19).
+	ErrAdminEmailTaken = errors.New("admin email already belongs to a non-admin user")
 )
 
 // User is an account. The password hash is never serialized.

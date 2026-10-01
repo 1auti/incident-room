@@ -12,8 +12,8 @@
 ## Tareas
 - [x] T1 Service de `user` y `auth` con repos fake: tests BR-19 (registro, email único, primer admin), BR-12 (solo admin cambia rol), login, middleware BR-10. Test primero.
 - [x] T2 Migración `0001`, repositorios SQL (pgx) contra Postgres real, handlers HTTP, wiring en `main.go` con config por entorno.
-- [ ] T3 Frontend: registro, login, guardia de ruta; `e2e/uc-01.spec.ts` (un test por criterio 01.1–01.6).
-- [ ] T4 `make verify` verde, validación Playwright, revisión con `reviewer`, entrada en `docs/bitacora.md`, commits `feat(UC-01): ...`.
+- [x] T3 Frontend: registro, login, guardia de ruta; `e2e/uc-01.spec.ts` (un test por criterio 01.1–01.6).
+- [x] T4 `make verify` verde, validación Playwright, revisión con `reviewer`, entrada en `docs/bitacora.md`, commits `feat(UC-01): ...`.
 
 Ruta: T1/T2/T3 delegated (un writer a la vez, 2+ archivos no triviales); T4 parent + `reviewer`.
 

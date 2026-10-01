@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -53,6 +54,10 @@ func run() error {
 
 	if email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && password != "" {
 		if err := userSvc.EnsureAdmin(ctx, email, password); err != nil {
+			if errors.Is(err, user.ErrAdminEmailTaken) {
+				return fmt.Errorf("ADMIN_EMAIL %q already belongs to a non-admin user and there is no admin: "+
+					"existing users are not promoted automatically; use a different ADMIN_EMAIL or remove that user: %w", email, err)
+			}
 			return fmt.Errorf("ensure admin: %w", err)
 		}
 	}
@@ -62,6 +67,6 @@ func run() error {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, slog.New(slog.NewTextHandler(os.Stderr, nil))), ReadHeaderTimeout: 10 * time.Second}
 	return srv.ListenAndServe()
 }

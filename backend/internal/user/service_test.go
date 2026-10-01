@@ -158,6 +158,33 @@ func TestBR19_PrimerAdminDesdeEntorno(t *testing.T) {
 	})
 }
 
+func TestBR19_AdminEmailDeUsuarioExistenteFallaCerrado(t *testing.T) {
+	repo := newFakeRepo()
+	svc := user.NewService(repo)
+	existing, err := svc.Register(context.Background(), "Ana", "root@example.com", "user-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = svc.EnsureAdmin(context.Background(), "ROOT@example.com", "admin-pass")
+	if !errors.Is(err, user.ErrAdminEmailTaken) {
+		t.Fatalf("err = %v, want ErrAdminEmailTaken", err)
+	}
+	if errors.Is(err, user.ErrEmailTaken) {
+		t.Errorf("err must be distinguishable from ErrEmailTaken")
+	}
+	if ok, _ := repo.ExistsAdmin(context.Background()); ok {
+		t.Errorf("no admin must be created")
+	}
+	got, _ := repo.FindByID(context.Background(), existing.ID)
+	if got.Role != user.RoleIngeniero {
+		t.Errorf("role = %q, want ingeniero (existing users are never promoted)", got.Role)
+	}
+	if len(repo.users) != 1 {
+		t.Errorf("users = %d, want 1", len(repo.users))
+	}
+}
+
 func TestBR12_SoloAdminCambiaRol(t *testing.T) {
 	tests := []struct {
 		name     string

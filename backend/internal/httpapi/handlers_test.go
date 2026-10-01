@@ -3,6 +3,8 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -104,7 +106,7 @@ func newEnv(t *testing.T) *env {
 	sessions := &fakeSessions{m: map[string]auth.Session{}}
 	us := user.NewService(users)
 	as := auth.NewService(users, sessions, time.Hour, time.Now)
-	return &env{h: httpapi.New(us, as), users: users, sessions: sessions, usersSvc: us}
+	return &env{h: httpapi.New(us, as, slog.New(slog.NewTextHandler(io.Discard, nil))), users: users, sessions: sessions, usersSvc: us}
 }
 
 func (e *env) do(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {

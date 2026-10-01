@@ -44,6 +44,8 @@ func (s *Service) ChangeRole(ctx context.Context, actor User, targetID string, r
 }
 
 // EnsureAdmin creates the first admin only when none exists (BR-19). It is idempotent.
+// It fails closed with ErrAdminEmailTaken when the email already belongs to a
+// user: promoting existing accounts would let anyone pre-register that email.
 func (s *Service) EnsureAdmin(ctx context.Context, email, password string) error {
 	exists, err := s.repo.ExistsAdmin(ctx)
 	if err != nil {
@@ -53,6 +55,9 @@ func (s *Service) EnsureAdmin(ctx context.Context, email, password string) error
 		return nil
 	}
 	if _, err := s.create(ctx, "Admin", email, password, RoleAdmin); err != nil {
+		if errors.Is(err, ErrEmailTaken) {
+			return fmt.Errorf("create admin: %w", ErrAdminEmailTaken)
+		}
 		return fmt.Errorf("create admin: %w", err)
 	}
 	return nil

@@ -42,6 +42,11 @@ type SessionRepository interface {
 	FindByTokenHash(ctx context.Context, tokenHash string) (Session, error)
 }
 
+// dummyPasswordHash is a valid bcrypt hash (cost bcrypt.DefaultCost, the cost
+// user.Service stores) of a random value nobody knows. Login compares against it
+// when the email does not exist so both failure paths cost one bcrypt comparison.
+const dummyPasswordHash = "$2a$10$0LchmUyP/cGjkWz2WwFUpOI5YxeHWgby6c8rwtDsvTPmPtvC1M43W"
+
 // Service authenticates users and resolves sessions.
 type Service struct {
 	users    UserFinder
@@ -56,10 +61,12 @@ func NewService(users UserFinder, sessions SessionRepository, ttl time.Duration,
 }
 
 // Login verifies credentials and returns an opaque session token and its expiry.
-// Unknown email and wrong password are indistinguishable.
+// Unknown email and wrong password are indistinguishable: same error and, because
+// an unknown email still pays one bcrypt comparison against a decoy hash, the same cost.
 func (s *Service) Login(ctx context.Context, email, password string) (string, time.Time, error) {
 	u, err := s.users.FindByEmail(ctx, user.NormalizeEmail(email))
 	if errors.Is(err, user.ErrNotFound) {
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
 		return "", time.Time{}, ErrInvalidCredentials
 	}
 	if err != nil {

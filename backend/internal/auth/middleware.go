@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
 
@@ -26,7 +27,8 @@ func UserFromContext(ctx context.Context) (user.User, bool) {
 }
 
 // RequireAuth answers 401 without side effects when there is no valid session (BR-10).
-func RequireAuth(authn Authenticator) func(http.Handler) http.Handler {
+// Unexpected authenticator failures answer 500 and are logged with logger, never exposed.
+func RequireAuth(authn Authenticator, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			c, err := r.Cookie(CookieName)
@@ -38,6 +40,7 @@ func RequireAuth(authn Authenticator) func(http.Handler) http.Handler {
 			if err != nil {
 				status := http.StatusUnauthorized
 				if !errors.Is(err, ErrUnauthenticated) {
+					logger.Error("internal error", "err", err)
 					status = http.StatusInternalServerError
 				}
 				http.Error(w, http.StatusText(status), status)

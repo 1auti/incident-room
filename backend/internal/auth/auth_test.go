@@ -1,10 +1,13 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,11 +153,11 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 		wantStatus int
 		wantCalled bool
 	}{
-		{"no cookie", auth.RequireAuth(svc), "", http.StatusUnauthorized, false},
-		{"invalid token", auth.RequireAuth(svc), "bogus", http.StatusUnauthorized, false},
-		{"valid session", auth.RequireAuth(svc), token, http.StatusOK, true},
-		{"role allowed", chain(auth.RequireAuth(svc), auth.RequireRole(user.RoleIngeniero)), token, http.StatusOK, true},
-		{"role not allowed", chain(auth.RequireAuth(svc), auth.RequireRole(user.RoleAdmin)), token, http.StatusForbidden, false},
+		{"no cookie", auth.RequireAuth(svc, discardLogger()), "", http.StatusUnauthorized, false},
+		{"invalid token", auth.RequireAuth(svc, discardLogger()), "bogus", http.StatusUnauthorized, false},
+		{"valid session", auth.RequireAuth(svc, discardLogger()), token, http.StatusOK, true},
+		{"role allowed", chain(auth.RequireAuth(svc, discardLogger()), auth.RequireRole(user.RoleIngeniero)), token, http.StatusOK, true},
+		{"role not allowed", chain(auth.RequireAuth(svc, discardLogger()), auth.RequireRole(user.RoleAdmin)), token, http.StatusForbidden, false},
 		{"role without session", auth.RequireRole(user.RoleAdmin), "", http.StatusUnauthorized, false},
 	}
 	for _, tt := range tests {
@@ -185,4 +188,49 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 
 func chain(outer, inner func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler { return outer(inner(next)) }
+}
+
+func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)) }
+
+type failingAuthenticator struct{ err error }
+
+func (f failingAuthenticator) Authenticate(context.Context, string) (user.User, error) {
+	return user.User{}, f.err
+}
+
+func TestRequireAuth_ErrorDeInfraestructura(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantLogged bool
+	}{
+		{"infrastructure error", errors.New("pq: connection refused to db-secret-host"), http.StatusInternalServerError, true},
+		{"unauthenticated is not an error", auth.ErrUnauthenticated, http.StatusUnauthorized, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			called := false
+			h := auth.RequireAuth(failingAuthenticator{tt.err}, logger)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+			req := httptest.NewRequest(http.MethodGet, "/anything", nil)
+			req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "tok"})
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus || called {
+				t.Errorf("status = %d called = %v, want %d false", rec.Code, called, tt.wantStatus)
+			}
+			if strings.Contains(rec.Body.String(), "db-secret-host") {
+				t.Errorf("response leaks the error: %q", rec.Body.String())
+			}
+			if got := strings.Contains(logs.String(), "level=ERROR"); got != tt.wantLogged {
+				t.Errorf("error logged = %v, want %v (logs: %q)", got, tt.wantLogged, logs.String())
+			}
+			if tt.wantLogged && !strings.Contains(logs.String(), "db-secret-host") {
+				t.Errorf("log must carry the error: %q", logs.String())
+			}
+		})
+	}
 }

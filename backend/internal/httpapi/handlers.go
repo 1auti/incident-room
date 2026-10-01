@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -39,9 +40,9 @@ type handlers struct {
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth) http.Handler {
+func New(users Users, authn Auth, logger *slog.Logger) http.Handler {
 	h := &handlers{users: users, auth: authn}
-	requireAuth := auth.RequireAuth(authn)
+	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
 	mux := http.NewServeMux()
