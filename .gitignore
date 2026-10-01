@@ -6,3 +6,5 @@ dist/
 *.log
 /backend/api
 /backend/bin/
+test-results/
+playwright-report/

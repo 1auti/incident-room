@@ -25,7 +25,7 @@ Ninguno decide reglas de negocio: las dudas vuelven al usuario. `/delegate` sigu
 
 ## Verificación
 - `make verify` es el único comando de verificación (build, vet, tests, lint, typecheck).
-- `make verify-db` complementa a `verify` (no lo reemplaza): corre los tests de backend, SQL incluidos, contra un Postgres descartable. Usalo cuando el cambio toque SQL; los agentes no piden credenciales.
+- `make verify-db` complementa a `verify` (no lo reemplaza): corre los tests de backend, SQL incluidos, contra un Postgres descartable. Los tests SQL leen `TEST_DATABASE_URL` (nunca `DATABASE_URL`, que es la de la API) y cada test crea y elimina su propio schema. Usalo cuando el cambio toque SQL; los agentes no piden credenciales.
 - Nunca uses `--no-verify` ni desactives, saltees o debilites tests o lint para que algo pase.
 
 ## Herramientas MCP
