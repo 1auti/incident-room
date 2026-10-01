@@ -18,8 +18,14 @@ No inventes reglas de negocio.
 5. Revisar: subagente `reviewer` sobre el diff; resolver todo lo BLOQUEANTE.
 6. Registrar: entrada en `docs/bitacora.md`. Commit `tipo(UC-XX): descripción`.
 
+## Agentes (`.claude/agents/`)
+Cadena: `writer` (haiku, explora y escribe el informe) → `communicator` (haiku, lo condensa en un brief) → `architect` (opus, solo lectura, decide y entrega el plan) → aprobación del usuario → `builder` (sonnet, implementa y corre `make verify`) → `reviewer`.
+`/uc UC-XX` orquesta la cadena completa y para en la aprobación del plan; el architect recibe el brief y el informe completo del writer.
+Ninguno decide reglas de negocio: las dudas vuelven al usuario. `/delegate` sigue usando el ejecutor opencode como alternativa al `builder`.
+
 ## Verificación
 - `make verify` es el único comando de verificación (build, vet, tests, lint, typecheck).
+- `make verify-db` complementa a `verify` (no lo reemplaza): corre los tests de backend, SQL incluidos, contra un Postgres descartable. Usalo cuando el cambio toque SQL; los agentes no piden credenciales.
 - Nunca uses `--no-verify` ni desactives, saltees o debilites tests o lint para que algo pase.
 
 ## Herramientas MCP
