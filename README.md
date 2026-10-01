@@ -109,11 +109,16 @@ Consultas sobre runbooks con RAG (pgvector) y acciones por tool calling: abrir i
 ## Cómo correrlo
 
 ```sh
-make setup    # activa el hook de git pre-commit
-make verify   # build, vet, tests y lint de backend y frontend
+make setup      # activa el hook de git pre-commit
+make verify     # build, vet, tests y lint de backend y frontend
+make verify-db  # tests de backend con SQL real (Postgres descartable; requiere Docker)
+make e2e        # Playwright contra la aplicación real (requiere Docker y `npx playwright install chromium` una vez)
+make dev        # levanta la aplicación completa para usarla en el navegador (requiere Docker)
 ```
 
-Los secretos vienen del entorno; el proyecto no usa archivos `.env` en el repositorio. Instrucciones de ejecución de la aplicación completa **(pendiente)**.
+`make dev` levanta un Postgres descartable, el backend (puerto 8080) y el frontend (puerto 5173) y muestra la URL y las credenciales del admin de ejemplo (`admin@incident-room.local` con una contraseña aleatoria, o las que exportes en `ADMIN_EMAIL` y `ADMIN_PASSWORD`). Ctrl-C lo detiene y elimina la base: **los datos no persisten entre ejecuciones**. Los puertos se cambian con `DEV_API_PORT` y `DEV_WEB_PORT`. Requiere Go, Node, Docker y `curl`.
+
+Los secretos vienen del entorno; el proyecto no usa archivos `.env` en el repositorio. El proxy de Vite (`/api`) solo cubre desarrollo: cómo se sirve la aplicación en producción es una decisión de arquitectura pendiente.
 
 ## Estructura del repositorio
 

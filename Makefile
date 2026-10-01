@@ -1,5 +1,5 @@
 # Única fuente de verificación: la usan los hooks de Claude Code, el pre-commit y la CI.
-.PHONY: verify verify-backend verify-frontend verify-db e2e setup
+.PHONY: verify verify-backend verify-frontend verify-db e2e dev setup
 
 verify: verify-backend verify-frontend
 
@@ -19,6 +19,11 @@ verify-db:
 # Requiere Docker y `npx playwright install chromium` una vez; no forma parte de verify.
 e2e:
 	bash scripts/e2e.sh
+
+# Levanta la aplicación completa (Postgres descartable, backend y frontend) para usarla en el navegador.
+# Requiere Docker. Ctrl-C la detiene; los datos no persisten. No forma parte de verify.
+dev:
+	bash scripts/dev.sh
 
 # Activa los hooks de git versionados en el repo.
 setup:
