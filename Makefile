@@ -1,5 +1,5 @@
 # Única fuente de verificación: la usan los hooks de Claude Code, el pre-commit y la CI.
-.PHONY: verify verify-backend verify-frontend setup
+.PHONY: verify verify-backend verify-frontend verify-db setup
 
 verify: verify-backend verify-frontend
 
@@ -9,6 +9,11 @@ verify-backend:
 # El build de la plantilla de Vite incluye el typecheck (tsc -b).
 verify-frontend:
 	cd frontend && npm run lint && npm run build
+
+# Complemento de verify, no lo reemplaza: corre los tests de backend (incluidos los SQL)
+# contra un Postgres descartable. Requiere Docker; no forma parte de los hooks.
+verify-db:
+	bash scripts/verify-db.sh
 
 # Activa los hooks de git versionados en el repo.
 setup:
