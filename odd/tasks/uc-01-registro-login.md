@@ -11,7 +11,7 @@
 
 ## Tareas
 - [x] T1 Service de `user` y `auth` con repos fake: tests BR-19 (registro, email único, primer admin), BR-12 (solo admin cambia rol), login, middleware BR-10. Test primero.
-- [ ] T2 Migración `0001`, repositorios SQL (pgx) contra Postgres real, handlers HTTP, wiring en `main.go` con config por entorno.
+- [x] T2 Migración `0001`, repositorios SQL (pgx) contra Postgres real, handlers HTTP, wiring en `main.go` con config por entorno.
 - [ ] T3 Frontend: registro, login, guardia de ruta; `e2e/uc-01.spec.ts` (un test por criterio 01.1–01.6).
 - [ ] T4 `make verify` verde, validación Playwright, revisión con `reviewer`, entrada en `docs/bitacora.md`, commits `feat(UC-01): ...`.
 
@@ -19,4 +19,6 @@ Ruta: T1/T2/T3 delegated (un writer a la vez, 2+ archivos no triviales); T4 pare
 
 ## Progreso / evidencia
 - T1: writer (Sonnet) reportó RED (vet "no non-test Go files") y GREEN; el parent re-verificó gofmt/vet/test en verde y los 7 tests nombrados por BR.
+- T2: writer (Sonnet) dejó SQL/handlers/wiring sin poder probar Postgres. El parent levantó un Postgres descartable (contenedor `ir-uc01-test`, puerto 55432, contraseña aleatoria) y corrió los tests SQL: la primera corrida falló por una carrera real (`CREATE TABLE schema_migrations` fuera del advisory lock); se movió dentro del lock y pasó. Servidor real + curl: 01.1 201 sin password_hash, 01.2 409, 01.3 401 sin cookie / 200 con cookie, 01.4 401, 01.5 403 y rol intacto / 200 y rol `oncall`, 01.6 admin de entorno puede loguear y un reinicio no crea otro (1 admin).
+- Review nativa de T1 aprobada (4 lentes, sin bloqueantes). Hallazgos informativos pendientes de decidir en T4: login timing, 500 sin log/test en RequireAuth, nombre fijo "Admin".
 - Plan aprobado por el usuario (2026-09-30). Sesión opaca en tabla `sessions`, cookie HttpOnly; deps nuevas `pgx/v5` y `x/crypto/bcrypt`.
