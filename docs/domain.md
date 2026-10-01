@@ -21,7 +21,7 @@ Convenciones: los identificadores son UUID; todo instante se guarda en UTC (`tim
 | Campo | Tipo | Notas |
 |---|---|---|
 | id | UUID | |
-| name | texto | único, obligatorio |
+| name | texto | único (sin distinguir mayúsculas), obligatorio |
 | criticality | enum `critica` \| `importante` \| `estandar` | obligatorio; lo fija el admin (BR-01, BR-12) |
 | oncall_user_id | UUID → User, nullable | único on-call del servicio; debe tener rol `oncall`; lo asigna el admin (BR-11) |
 
@@ -163,7 +163,7 @@ El rol `ingeniero` no ejecuta ninguna transición.
 
 ### BR-12 — Gestión de servicios, runbooks y usuarios
 **Enunciado:** solo `admin` da de alta, edita y da de baja servicios, runbooks y usuarios, incluido asignar rol (BR-19) y on-call de servicio (BR-11). La baja de un runbook es física: elimina el runbook y su embedding, y el copiloto deja de recuperarlo (BR-14).
-**Casos de uso:** UC-01, UC-04, UC-07, UC-10.
+**Casos de uso:** UC-01, UC-04, UC-07, UC-10, UC-11.
 **Ejemplo:** un `oncall` edita un runbook → prohibido; el admin lo edita y `updated_at` cambia. Tras borrar el runbook "Reinicio de payments", una consulta al copiloto sobre ese tema no lo cita.
 
 ### BR-13 — Postmortem asistido
@@ -200,6 +200,11 @@ El rol `ingeniero` no ejecuta ninguna transición.
 **Enunciado:** el registro público crea usuarios con rol `ingeniero`; el email debe ser único. Solo el admin cambia el rol de un usuario (a `oncall` o `admin`). No se puede quitar el rol `oncall` a un usuario que es on-call de algún servicio: primero hay que asignar otro on-call a esos servicios (BR-11). Al iniciar la aplicación, si no existe ningún `admin`, se crea uno con credenciales tomadas de variables de entorno; no hay otro modo de obtener el primer admin.
 **Casos de uso:** UC-01.
 **Ejemplo:** Ana se registra → queda `ingeniero`. Registrarse con un email existente → rechazado. El admin promueve a Ana a `oncall` → su rol cambia.
+
+### BR-20 — Baja de servicios
+**Enunciado:** solo se puede dar de baja un servicio que no tiene incidentes (en cualquier estado) ni runbooks. Si los tiene, la baja se rechaza con un error y el servicio no cambia. La baja es física. Quién puede darla de baja: solo `admin` (BR-12).
+**Casos de uso:** UC-11.
+**Ejemplo:** el servicio `search` sin incidentes ni runbooks → el admin lo da de baja y deja de existir. El servicio `payments` con un incidente cerrado → la baja se rechaza y `payments` sigue existiendo.
 
 ## 4. Matriz de permisos por rol
 
@@ -254,3 +259,5 @@ Las 14 preguntas de la primera versión las resolvió el agente por delegación 
 | PA-14 | ¿On-call declara y agrega notas? | Sí, igual que ingeniero y admin | BR-10, sección 4 |
 | — | ¿Regenerar un borrador genera evento? (hallado al escribir specs) | Sí; editar el texto no | BR-09 |
 | — | ¿Se puede quitar el rol `oncall` a quien es on-call de un servicio? (hallado al escribir specs) | No, primero se reasigna el servicio | BR-19 |
+| — | ¿Qué pasa al dar de baja un servicio que ya tiene incidentes o runbooks? (hallado al planificar UC-02; decidido por el usuario el 2026-09-30) | Se rechaza la baja; solo se da de baja un servicio sin incidentes ni runbooks | BR-20 |
+| — | ¿La unicidad del nombre de servicio distingue mayúsculas? (decidido por el usuario el 2026-10-01) | No distingue; se guarda como se escribió y se compara sin mayúsculas | BR-12 (entidad Service) |

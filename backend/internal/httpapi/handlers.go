@@ -6,13 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"incident-room-backend/internal/auth"
+	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/user"
 )
 
@@ -34,18 +35,32 @@ type Auth interface {
 	Authenticate(ctx context.Context, token string) (user.User, error)
 }
 
+// Services is the service catalog behavior the handlers need.
+type Services interface {
+	List(ctx context.Context) ([]service.Service, error)
+	Create(ctx context.Context, actor user.User, name string, criticality incident.Criticality) (service.Service, error)
+	Update(ctx context.Context, actor user.User, id, name string, criticality incident.Criticality) (service.Service, error)
+	Delete(ctx context.Context, actor user.User, id string) error
+}
+
 type handlers struct {
-	users Users
-	auth  Auth
+	users    Users
+	auth     Auth
+	services Services
+	logger   *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn}
+func New(users Users, authn Auth, services Services, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
 	mux := http.NewServeMux()
+	mux.Handle("GET /api/services", requireAuth(http.HandlerFunc(h.listServices)))
+	mux.Handle("POST /api/services", requireAuth(requireAdmin(http.HandlerFunc(h.createService))))
+	mux.Handle("PUT /api/services/{id}", requireAuth(requireAdmin(http.HandlerFunc(h.updateService))))
+	mux.Handle("DELETE /api/services/{id}", requireAuth(requireAdmin(http.HandlerFunc(h.deleteService))))
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
 	mux.Handle("GET /api/me", requireAuth(http.HandlerFunc(h.me)))
@@ -68,7 +83,7 @@ func (h *handlers) register(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := h.users.Register(r.Context(), strings.TrimSpace(in.Name), in.Email, in.Password)
 	if err != nil {
-		fail(w, err)
+		h.fail(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, u)
@@ -84,7 +99,7 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 	}
 	token, expires, err := h.auth.Login(r.Context(), in.Email, in.Password)
 	if err != nil {
-		fail(w, err)
+		h.fail(w, err)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -118,10 +133,64 @@ func (h *handlers) changeRole(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, _ := auth.UserFromContext(r.Context())
 	if err := h.users.ChangeRole(r.Context(), actor, r.PathValue("id"), in.Role); err != nil {
-		fail(w, err)
+		h.fail(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *handlers) listServices(w http.ResponseWriter, r *http.Request) {
+	list, err := h.services.List(r.Context())
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if list == nil {
+		list = []service.Service{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+type serviceInput struct {
+	Name        string               `json:"name"`
+	Criticality incident.Criticality `json:"criticality"`
+}
+
+func (h *handlers) createService(w http.ResponseWriter, r *http.Request) {
+	var in serviceInput
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	s, err := h.services.Create(r.Context(), actor, in.Name, in.Criticality)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, s)
+}
+
+func (h *handlers) updateService(w http.ResponseWriter, r *http.Request) {
+	var in serviceInput
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	s, err := h.services.Update(r.Context(), actor, r.PathValue("id"), in.Name, in.Criticality)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+func (h *handlers) deleteService(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	if err := h.services.Delete(r.Context(), actor, r.PathValue("id")); err != nil {
+		h.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -134,8 +203,18 @@ func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // fail translates domain errors to HTTP; anything else is a 500 that hides details.
-func fail(w http.ResponseWriter, err error) {
+func (h *handlers) fail(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, service.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid service: name is required and criticality must be critica, importante or estandar")
+	case errors.Is(err, service.ErrNameTaken):
+		writeError(w, http.StatusConflict, "service name already in use")
+	case errors.Is(err, service.ErrInUse):
+		writeError(w, http.StatusConflict, "service has incidents or runbooks")
+	case errors.Is(err, service.ErrNotFound):
+		writeError(w, http.StatusNotFound, "service not found")
+	case errors.Is(err, service.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, user.ErrEmailTaken):
 		writeError(w, http.StatusConflict, "email already registered")
 	case errors.Is(err, auth.ErrInvalidCredentials), errors.Is(err, auth.ErrUnauthenticated):
@@ -145,7 +224,7 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, user.ErrNotFound):
 		writeError(w, http.StatusNotFound, "user not found")
 	default:
-		log.Printf("internal error: %v", err)
+		h.logger.Error("internal error", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }
