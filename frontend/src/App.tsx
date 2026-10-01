@@ -1,4 +1,5 @@
 import { AuthGate } from './features/auth/AuthGate'
+import { ServicesPage } from './features/services/ServicesPage'
 
 export default function App() {
   return (
@@ -10,6 +11,7 @@ export default function App() {
             <span data-testid="current-user-name">{user.name}</span> (
             <span data-testid="current-user-role">{user.role}</span>)
           </p>
+          <ServicesPage user={user} />
         </main>
       )}
     </AuthGate>
