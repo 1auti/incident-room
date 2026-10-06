@@ -93,11 +93,18 @@ func (r *PostgresRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// HasIncidents reports whether any incident references the service. No table
-// references services yet; UC-02 replaces this body with
-// SELECT EXISTS (...) over incidents.
-func (r *PostgresRepository) HasIncidents(context.Context, string) (bool, error) {
-	return false, nil
+// HasIncidents reports whether any incident references the service (BR-20).
+// A malformed id is ErrNotFound, like Update and Delete.
+func (r *PostgresRepository) HasIncidents(ctx context.Context, id string) (bool, error) {
+	var has bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM incidents WHERE service_id = $1)`, id).Scan(&has)
+	if pgErrCode(err) == pgInvalidTextRepresen {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("check incidents: %w", err)
+	}
+	return has, nil
 }
 
 // HasRunbooks reports whether any runbook references the service. No table

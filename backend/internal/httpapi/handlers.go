@@ -43,16 +43,23 @@ type Services interface {
 	Delete(ctx context.Context, actor user.User, id string) error
 }
 
+// Incidents is the incident behavior the handlers need.
+type Incidents interface {
+	Suggest(ctx context.Context, actor user.User, serviceID string, impact incident.Impact) (incident.Severity, error)
+	Declare(ctx context.Context, actor user.User, in incident.DeclareInput) (incident.Incident, []incident.TimelineEvent, error)
+}
+
 type handlers struct {
-	users    Users
-	auth     Auth
-	services Services
-	logger   *slog.Logger
+	users     Users
+	auth      Auth
+	services  Services
+	incidents Incidents
+	logger    *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, services Services, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn, services: services, logger: logger}
+func New(users Users, authn Auth, services Services, incidents Incidents, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
@@ -61,6 +68,9 @@ func New(users Users, authn Auth, services Services, logger *slog.Logger) http.H
 	mux.Handle("POST /api/services", requireAuth(requireAdmin(http.HandlerFunc(h.createService))))
 	mux.Handle("PUT /api/services/{id}", requireAuth(requireAdmin(http.HandlerFunc(h.updateService))))
 	mux.Handle("DELETE /api/services/{id}", requireAuth(requireAdmin(http.HandlerFunc(h.deleteService))))
+	// Every role may declare (BR-10): the service enforces it, so no RequireRole here.
+	mux.Handle("GET /api/incidents/suggested-severity", requireAuth(http.HandlerFunc(h.suggestSeverity)))
+	mux.Handle("POST /api/incidents", requireAuth(http.HandlerFunc(h.declareIncident)))
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
 	mux.Handle("GET /api/me", requireAuth(http.HandlerFunc(h.me)))
@@ -193,6 +203,44 @@ func (h *handlers) deleteService(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *handlers) suggestSeverity(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	q := r.URL.Query()
+	sev, err := h.incidents.Suggest(r.Context(), actor, q.Get("service_id"), incident.Impact(q.Get("impact")))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"suggested_severity": string(sev)})
+}
+
+// declareIncident ignores any declared_by in the body: the declarer is the
+// session user.
+func (h *handlers) declareIncident(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Title       string            `json:"title"`
+		Description string            `json:"description"`
+		ServiceID   string            `json:"service_id"`
+		Impact      incident.Impact   `json:"impact"`
+		Severity    incident.Severity `json:"severity"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	inc, events, err := h.incidents.Declare(r.Context(), actor, incident.DeclareInput{
+		Title: in.Title, Description: in.Description, ServiceID: in.ServiceID, Impact: in.Impact, Severity: in.Severity,
+	})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if events == nil {
+		events = []incident.TimelineEvent{}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"incident": inc, "timeline": events})
+}
+
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
@@ -214,6 +262,12 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrNotFound):
 		writeError(w, http.StatusNotFound, "service not found")
 	case errors.Is(err, service.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, incident.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid incident: title, service_id and impact (caida_total, degradacion or menor) are required and severity must be SEV1, SEV2 or SEV3")
+	case errors.Is(err, incident.ErrServiceNotFound):
+		writeError(w, http.StatusBadRequest, "invalid incident: service does not exist")
+	case errors.Is(err, incident.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, user.ErrEmailTaken):
 		writeError(w, http.StatusConflict, "email already registered")

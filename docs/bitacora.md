@@ -84,3 +84,14 @@ Una entrada por iteración relevante. Es la materia prima del README.
 - **Ajuste a las reglas de contexto:** `docs/domain.md` gana BR-20 y aclara que el nombre de servicio es único sin distinguir mayúsculas; `specs/UC-11-gestion-servicios.md` es nuevo. Lección: en una rama apilada la review nativa mide contra `main` y vuelve a revisar el trabajo ya aprobado; conviene pedirla sobre un candidato acotado.
 
 ---
+
+### 2026-10-06 — UC-02 — Declarar un incidente con sugerencia de severidad
+- **Herramienta / agente:** Claude Code (orquestador) con la cadena `writer` (Haiku) → `communicator` (Haiku) → `architect` (Opus) → `builder` (Sonnet) → `reviewer` (Sonnet)
+- **Prompt o comando:** `/uc UC-02`; plan aprobado por el usuario con decisiones explícitas (impacto guardado, sugerencia calculada por el backend, evento `declaracion` siempre y `cambio_severidad` si difiere, reloj inyectable).
+- **Qué propuso el agente:** `incident.Service` (`Suggest`, `Declare`) con el puerto `Repository` definido en `incident` (el paquete `service` ya lo importa), migración `0003` sin `ON DELETE CASCADE`, creación transaccional de incidente y eventos, `HasIncidents` real, rutas `GET /api/incidents/suggested-severity` y `POST /api/incidents`, formulario de declaración y `e2e/uc-02.spec.ts`.
+- **Qué falló y qué capa lo detectó:** (1) El `architect` detectó que no hay forma de asignar un on-call hasta UC-04, así que el e2e de UC-02.2 no puede asertar `assigned_to` (lo cubren `TestBR11_*` con fake; decisión del usuario: aceptar esa cobertura). (2) El `builder` descubrió con el test SQL que `Create` con un UUID mal formado devolvía error interno; se mapeó 22P02 a `ErrServiceNotFound` (lo detectó `TestPostgres_ServicioInexistenteEsErrServiceNotFound`). (3) El `reviewer` no halló bloqueantes. Verificación propia: `make verify`, `make verify-db` y `make e2e` (19 passed) en verde.
+- **Corrección / decisión:** `Suggest` también valida el rol (`ErrForbidden`) y un servicio inexistente responde 400 (decisión del plan). Mejoras del `reviewer` sin aplicar: test de atomicidad de `Create` (rollback si falla un evento), test de `Suggest` con rol inválido, caso SQL con on-call poblado, índice sobre `timeline_events.incident_id` y trigger que haga cumplir BR-09 en la base (para el UC que liste timelines), el `error` del formulario no se limpia al cambiar servicio o impacto, y la lista de servicios se carga una sola vez al montar. Pendiente de decisión: el e2e de UC-11.6 (borrar un servicio con incidentes da 409) ya se puede escribir y no estaba en el plan de UC-02.
+- **Deuda para UC-04:** el e2e de UC-02.2 no puede asertar `assigned_to` == on-call del servicio (hoy no existe asignación de on-call); UC-04 debe agregar ese assert e2e.
+- **Ajuste a las reglas de contexto:** ninguno.
+
+---
