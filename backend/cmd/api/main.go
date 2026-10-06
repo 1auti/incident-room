@@ -20,6 +20,7 @@ import (
 
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/httpapi"
+	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/user"
 	"incident-room-backend/migrations"
@@ -54,6 +55,7 @@ func run() error {
 	authSvc := auth.NewService(userRepo, auth.NewPostgresSessionRepository(pool), sessionTTL, time.Now)
 
 	serviceMgr := service.NewManager(service.NewPostgresRepository(pool))
+	incidentSvc := incident.NewService(incident.NewPostgresRepository(pool), time.Now)
 
 	if email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && password != "" {
 		if err := userSvc.EnsureAdmin(ctx, email, password); err != nil {
@@ -70,6 +72,6 @@ func run() error {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, slog.New(slog.NewTextHandler(os.Stderr, nil))), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, slog.New(slog.NewTextHandler(os.Stderr, nil))), ReadHeaderTimeout: 10 * time.Second}
 	return srv.ListenAndServe()
 }

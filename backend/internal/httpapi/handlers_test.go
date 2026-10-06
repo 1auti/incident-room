@@ -164,12 +164,49 @@ func (f *fakeServiceRepo) HasIncidents(_ context.Context, id string) (bool, erro
 
 func (f *fakeServiceRepo) HasRunbooks(context.Context, string) (bool, error) { return false, nil }
 
+// fakeIncidentRepo resolves services from the fake catalog and records what is stored.
+type fakeIncidentRepo struct {
+	mu        sync.Mutex
+	services  *fakeServiceRepo
+	incidents []incident.Incident
+	events    []incident.TimelineEvent
+}
+
+func (f *fakeIncidentRepo) FindService(_ context.Context, id string) (incident.ServiceInfo, error) {
+	f.services.mu.Lock()
+	defer f.services.mu.Unlock()
+	for _, s := range f.services.list {
+		if s.ID == id {
+			return incident.ServiceInfo{Criticality: s.Criticality, OncallUserID: s.OncallUserID}, nil
+		}
+	}
+	return incident.ServiceInfo{}, incident.ErrServiceNotFound
+}
+
+func (f *fakeIncidentRepo) Create(_ context.Context, inc incident.Incident, evs []incident.TimelineEvent) (incident.Incident, []incident.TimelineEvent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inc.ID = fmt.Sprintf("inc-%d", len(f.incidents)+1)
+	out := make([]incident.TimelineEvent, len(evs))
+	for i, e := range evs {
+		e.ID = fmt.Sprintf("ev-%d", len(f.events)+i+1)
+		e.IncidentID = inc.ID
+		out[i] = e
+	}
+	f.incidents = append(f.incidents, inc)
+	f.events = append(f.events, out...)
+	return inc, out, nil
+}
+
+var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+
 type env struct {
-	h        http.Handler
-	users    *fakeUsers
-	sessions *fakeSessions
-	usersSvc *user.Service
-	services *fakeServiceRepo
+	h         http.Handler
+	users     *fakeUsers
+	sessions  *fakeSessions
+	usersSvc  *user.Service
+	services  *fakeServiceRepo
+	incidents *fakeIncidentRepo
 }
 
 func newEnv(t *testing.T) *env {
@@ -179,8 +216,10 @@ func newEnv(t *testing.T) *env {
 	services := &fakeServiceRepo{withDeps: map[string]bool{}}
 	us := user.NewService(users)
 	as := auth.NewService(users, sessions, time.Hour, time.Now)
-	h := httpapi.New(us, as, service.NewManager(services), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services}
+	incidents := &fakeIncidentRepo{services: services}
+	is := incident.NewService(incidents, func() time.Time { return fixedNow })
+	h := httpapi.New(us, as, service.NewManager(services), is, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents}
 }
 
 func (e *env) do(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -288,6 +327,8 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 	for _, tc := range []struct{ method, path, body string }{
 		{"GET", "/api/me", ""},
 		{"PATCH", "/api/users/id-ana@x.com/role", `{"role":"admin"}`},
+		{"POST", "/api/incidents", `{"title":"x","service_id":"svc-1","impact":"menor"}`},
+		{"GET", "/api/incidents/suggested-severity?service_id=svc-1&impact=menor", ""},
 	} {
 		w := e.do(tc.method, tc.path, tc.body, nil)
 		if w.Code != http.StatusUnauthorized {
@@ -296,6 +337,9 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 	}
 	if e.users.list[0].Role != user.RoleIngeniero {
 		t.Errorf("role changed without session")
+	}
+	if len(e.incidents.incidents) != 0 || len(e.incidents.events) != 0 {
+		t.Errorf("incident or events created without session")
 	}
 }
 
@@ -508,5 +552,87 @@ func TestUC117_ListaVaciaEsArray(t *testing.T) {
 	admin, _, _ := e.cookies(t)
 	if body := strings.TrimSpace(e.do("GET", "/api/services", "", admin).Body.String()); body != "[]" {
 		t.Errorf("body = %s, want []", body)
+	}
+}
+
+func TestUC021_SugerenciaPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	id := e.createService(t, admin, "Pagos") // importante
+	w := e.do("GET", "/api/incidents/suggested-severity?service_id="+id+"&impact=caida_total", "", eng)
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"suggested_severity":"SEV2"}` {
+		t.Errorf("status = %d, body %s", w.Code, w.Body)
+	}
+	for _, q := range []string{"service_id=" + id, "service_id=" + id + "&impact=enorme", "impact=menor", "service_id=nope&impact=menor"} {
+		w := e.do("GET", "/api/incidents/suggested-severity?"+q, "", eng)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"error"`) {
+			t.Errorf("query %q status = %d (%s), want 400 with JSON error", q, w.Code, w.Body)
+		}
+	}
+}
+
+func TestUC022_DeclararDevuelve201ConTimeline(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	id := e.createService(t, admin, "Pagos") // importante + caida_total => SEV2
+	body := `{"title":" Caida ","description":"d","service_id":"` + id + `","impact":"caida_total","severity":"SEV1","declared_by":"someone-else"}`
+	w := e.do("POST", "/api/incidents", body, eng)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	var got struct {
+		Incident map[string]any   `json:"incident"`
+		Timeline []map[string]any `json:"timeline"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	inc := got.Incident
+	if inc["id"] == "" || inc["title"] != "Caida" || inc["state"] != "declarado" || inc["suggested_severity"] != "SEV2" ||
+		inc["severity"] != "SEV1" || inc["declared_by"] != "id-ana@x.com" || inc["service_id"] != id ||
+		inc["impact"] != "caida_total" || inc["declared_at"] != "2026-10-01T10:00:00Z" {
+		t.Errorf("incident = %v", inc)
+	}
+	if v, ok := inc["assigned_to"]; !ok || v != nil {
+		t.Errorf("assigned_to = %v (present %v), want explicit null", v, ok)
+	}
+	if len(got.Timeline) != 2 || got.Timeline[0]["type"] != "declaracion" || got.Timeline[1]["type"] != "cambio_severidad" {
+		t.Fatalf("timeline = %v", got.Timeline)
+	}
+	for _, ev := range got.Timeline {
+		if ev["author_id"] != "id-ana@x.com" || ev["incident_id"] != inc["id"] || ev["occurred_at"] != "2026-10-01T10:00:00Z" {
+			t.Errorf("event = %v", ev)
+		}
+	}
+	if d, _ := got.Timeline[0]["data"].(map[string]any); d == nil || len(d) != 0 {
+		t.Errorf("declaracion data = %v, want {}", got.Timeline[0]["data"])
+	}
+	if d, _ := got.Timeline[1]["data"].(map[string]any); d["from"] != "SEV2" || d["to"] != "SEV1" {
+		t.Errorf("cambio_severidad data = %v", got.Timeline[1]["data"])
+	}
+	if e.incidents.incidents[0].DeclaredBy != "id-ana@x.com" {
+		t.Errorf("stored declared_by = %q, want the session user", e.incidents.incidents[0].DeclaredBy)
+	}
+}
+
+func TestUC025_ValidacionAlDeclarar(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	id := e.createService(t, admin, "Pagos")
+	for name, body := range map[string]string{
+		"json roto":      `{`,
+		"sin titulo":     `{"title":"  ","service_id":"` + id + `","impact":"menor"}`,
+		"sin service_id": `{"title":"x","impact":"menor"}`,
+		"sin impact":     `{"title":"x","service_id":"` + id + `"}`,
+		"servicio nope":  `{"title":"x","service_id":"nope","impact":"menor"}`,
+		"severidad mala": `{"title":"x","service_id":"` + id + `","impact":"menor","severity":"SEV4"}`,
+	} {
+		w := e.do("POST", "/api/incidents", body, eng)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"error"`) {
+			t.Errorf("%s: status = %d (%s), want 400 with JSON error", name, w.Code, w.Body)
+		}
+	}
+	if len(e.incidents.incidents) != 0 || len(e.incidents.events) != 0 {
+		t.Errorf("created %d incidents, %d events on invalid input", len(e.incidents.incidents), len(e.incidents.events))
 	}
 }

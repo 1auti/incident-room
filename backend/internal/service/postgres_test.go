@@ -99,3 +99,31 @@ func TestPostgres_FKBloqueaBajaEsErrInUse(t *testing.T) {
 		t.Errorf("service removed despite reference")
 	}
 }
+
+func TestPostgres_HasIncidentsDetectaIncidentes(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := service.NewPostgresRepository(pool)
+	s, err := repo.Create(c, "Pagos", incident.CriticalityStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has, err := repo.HasIncidents(c, s.ID); err != nil || has {
+		t.Fatalf("HasIncidents without incidents = %v, %v; want false", has, err)
+	}
+
+	var userID string
+	if err := pool.QueryRow(c, `INSERT INTO users (name, email, password_hash, role) VALUES ('Ana', 'ana@x.com', 'h', 'ingeniero') RETURNING id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(c, `INSERT INTO incidents (title, service_id, impact, suggested_severity, severity, state, declared_by, declared_at)
+		VALUES ('x', $1, 'menor', 'SEV3', 'SEV3', 'declarado', $2, now())`, s.ID, userID); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := repo.HasIncidents(c, s.ID); err != nil || !has {
+		t.Errorf("HasIncidents with incident = %v, %v; want true", has, err)
+	}
+	if _, err := repo.HasIncidents(c, "nope"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("HasIncidents nope err = %v, want ErrNotFound", err)
+	}
+}
