@@ -21,6 +21,7 @@ No inventes reglas de negocio.
 ## Agentes (`.claude/agents/`)
 Cadena: `writer` (haiku, explora y escribe el informe) → `communicator` (haiku, lo condensa en un brief) → `architect` (opus, solo lectura, decide y entrega el plan) → aprobación del usuario → `builder` (sonnet, implementa y corre `make verify`) → `reviewer`.
 `/uc UC-XX` orquesta la cadena completa y para en la aprobación del plan; el architect recibe el brief y el informe completo del writer.
+`ask` (haiku, solo lectura) responde dudas puntuales sobre el repo; queda fuera de la cadena.
 Ninguno decide reglas de negocio: las dudas vuelven al usuario. `/delegate` sigue usando el ejecutor opencode como alternativa al `builder`.
 
 ## Verificación
