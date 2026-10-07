@@ -5,6 +5,8 @@
 set -uo pipefail
 export PATH="$PATH:$HOME/go/bin:$HOME/.local/bin"
 cd "$(git rev-parse --show-toplevel)"
+# shellcheck source=scripts/lib/go-affected.sh
+source scripts/lib/go-affected.sh
 
 fail=0
 step() { printf '\n== pre-commit: %s\n' "$1"; }
@@ -15,13 +17,9 @@ mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
 
 go_files=()
 backend_changed=0
-all_go=0
 fe_files=()
 frontend_changed=0
 for f in "${staged[@]}"; do
-  case "$f" in
-    backend/go.mod | backend/go.sum) all_go=1 ;;
-  esac
   case "$f" in
     backend/*.go) go_files+=("$f") ;;
   esac
@@ -50,19 +48,7 @@ if ((backend_changed)); then
 
   # Affected packages: those with staged files plus every package that depends on them.
   step "go vet + go test (affected packages)"
-  if ((all_go)); then
-    pkgs=(./...)
-  else
-    changed_dirs=$(for f in "${staged[@]}"; do [[ "$f" == backend/* ]] && dirname "${f#backend/}"; done | sort -u)
-    mapfile -t changed < <(cd backend && for d in $changed_dirs; do go list "./$d" 2>/dev/null; done)
-    if ((${#changed[@]})); then
-      mapfile -t pkgs < <(cd backend && go list -f '{{.ImportPath}} {{join .Deps " "}}' ./... |
-        awk -v changed="${changed[*]}" 'BEGIN { n = split(changed, c, " "); for (i = 1; i <= n; i++) want[c[i]] = 1 }
-          { for (i = 1; i <= NF; i++) if ($i in want) { print $1; break } }')
-    else
-      pkgs=()
-    fi
-  fi
+  mapfile -t pkgs < <(go_affected_packages "${staged[@]}")
   if ((${#pkgs[@]})); then
     (cd backend && go vet "${pkgs[@]}" && go test "${pkgs[@]}") || fail=1
   else
