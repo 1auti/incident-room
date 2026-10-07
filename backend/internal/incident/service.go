@@ -3,6 +3,7 @@ package incident
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,6 +113,52 @@ func (s *Service) Declare(ctx context.Context, actor user.User, in DeclareInput)
 	return s.repo.Create(ctx, inc, events)
 }
 
+// ListFilter is what the board user asks for; an empty field means no filter.
+type ListFilter struct {
+	Severity  Severity
+	ServiceID string
+	State     State
+}
+
+// activeStates are all the states but cerrado (BR-15).
+var activeStates = []State{StateDeclared, StateAcknowledged, StateMitigating, StateResolved}
+
+// isActive reports whether an incident in state st is active (BR-15).
+func isActive(st State) bool {
+	return validState(st) && st != StateClosed
+}
+
+// List returns the active incidents (BR-15) matching every filter given, for any
+// authenticated role (BR-10). Filtering by cerrado yields an empty list without
+// touching the repository. The result is never nil.
+func (s *Service) List(ctx context.Context, actor user.User, f ListFilter) ([]Incident, error) {
+	if err := authorize(actor); err != nil {
+		return nil, err
+	}
+	if f.Severity != "" && !validSeverity(f.Severity) {
+		return nil, fmt.Errorf("severity must be SEV1, SEV2 or SEV3: %w", ErrInvalidFilter)
+	}
+	if f.State != "" && !validState(f.State) {
+		return nil, fmt.Errorf("state must be declarado, reconocido, mitigando, resuelto or cerrado: %w", ErrInvalidFilter)
+	}
+
+	states := slices.Clone(activeStates)
+	if f.State != "" {
+		if !isActive(f.State) {
+			return []Incident{}, nil
+		}
+		states = []State{f.State}
+	}
+	list, err := s.repo.List(ctx, ListQuery{States: states, Severity: f.Severity, ServiceID: f.ServiceID})
+	if err != nil {
+		return nil, fmt.Errorf("list incidents: %w", err)
+	}
+	if list == nil {
+		list = []Incident{}
+	}
+	return list, nil
+}
+
 // authorize lets ingeniero, oncall and admin through (BR-10).
 func authorize(actor user.User) error {
 	switch actor.Role {
@@ -132,6 +179,14 @@ func validImpact(i Impact) bool {
 func validSeverity(s Severity) bool {
 	switch s {
 	case SeveritySEV1, SeveritySEV2, SeveritySEV3:
+		return true
+	}
+	return false
+}
+
+func validState(st State) bool {
+	switch st {
+	case StateDeclared, StateAcknowledged, StateMitigating, StateResolved, StateClosed:
 		return true
 	}
 	return false

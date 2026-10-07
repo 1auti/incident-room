@@ -1,4 +1,5 @@
 import { AuthGate } from './features/auth/AuthGate'
+import { IncidentBoard } from './features/incidents/IncidentBoard'
 import { DeclareIncidentForm } from './features/incidents/DeclareIncidentForm'
 import { ServicesPage } from './features/services/ServicesPage'
 
@@ -13,6 +14,7 @@ export default function App() {
             <span data-testid="current-user-role">{user.role}</span>)
           </p>
           <ServicesPage user={user} />
+          <IncidentBoard />
           <DeclareIncidentForm />
         </main>
       )}

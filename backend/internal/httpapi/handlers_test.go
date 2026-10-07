@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -170,6 +171,25 @@ type fakeIncidentRepo struct {
 	services  *fakeServiceRepo
 	incidents []incident.Incident
 	events    []incident.TimelineEvent
+	listed    []incident.ListQuery
+	listErr   error
+}
+
+func (f *fakeIncidentRepo) List(_ context.Context, q incident.ListQuery) ([]incident.Incident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listed = append(f.listed, q)
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []incident.Incident
+	for _, inc := range f.incidents {
+		if slices.Contains(q.States, inc.State) && (q.Severity == "" || inc.Severity == q.Severity) &&
+			(q.ServiceID == "" || inc.ServiceID == q.ServiceID) {
+			out = append(out, inc)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeIncidentRepo) FindService(_ context.Context, id string) (incident.ServiceInfo, error) {
@@ -634,5 +654,75 @@ func TestUC025_ValidacionAlDeclarar(t *testing.T) {
 	}
 	if len(e.incidents.incidents) != 0 || len(e.incidents.events) != 0 {
 		t.Errorf("created %d incidents, %d events on invalid input", len(e.incidents.incidents), len(e.incidents.events))
+	}
+}
+
+func TestUC03_ListarIncidentesRequiereSesionYPasaFiltros(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	svcA := e.createService(t, admin, "Pagos")
+	svcB := e.createService(t, admin, "Auth")
+
+	// No session: denied, and the repository is never asked.
+	if w := e.do("GET", "/api/incidents", "", nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("no session status = %d, want 401", w.Code)
+	}
+	if len(e.incidents.listed) != 0 {
+		t.Fatalf("repo listed without session")
+	}
+
+	// Empty board is [] and not null.
+	w := e.do("GET", "/api/incidents", "", eng)
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatalf("empty status = %d, body %s, want 200 []", w.Code, w.Body)
+	}
+
+	for _, body := range []string{
+		`{"title":"a","service_id":"` + svcA + `","impact":"caida_total","severity":"SEV1"}`,
+		`{"title":"b","service_id":"` + svcB + `","impact":"menor","severity":"SEV3"}`,
+	} {
+		if w := e.do("POST", "/api/incidents", body, eng); w.Code != http.StatusCreated {
+			t.Fatalf("declare status = %d, body %s", w.Code, w.Body)
+		}
+	}
+	var list []map[string]any
+	w = e.do("GET", "/api/incidents?severity=SEV1&service_id="+svcA+"&state=declarado", "", eng)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0]["title"] != "a" {
+		t.Errorf("list = %v", list)
+	}
+	if v, ok := list[0]["escalated_at"]; !ok || v != nil {
+		t.Errorf("escalated_at = %v (present %v), want explicit null", v, ok)
+	}
+	last := e.incidents.listed[len(e.incidents.listed)-1]
+	if last.Severity != incident.SeveritySEV1 || last.ServiceID != svcA || !slices.Equal(last.States, []incident.State{incident.StateDeclared}) {
+		t.Errorf("query = %+v", last)
+	}
+
+	// Closed never lists and an invalid enum is a 400 with its own message.
+	calls := len(e.incidents.listed)
+	if w := e.do("GET", "/api/incidents?state=cerrado", "", eng); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Errorf("cerrado status = %d, body %s, want 200 []", w.Code, w.Body)
+	}
+	for _, q := range []string{"severity=SEV9", "state=dormido"} {
+		w := e.do("GET", "/api/incidents?"+q, "", eng)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid filter") {
+			t.Errorf("%s: status = %d (%s), want 400 invalid filter", q, w.Code, w.Body)
+		}
+	}
+	if len(e.incidents.listed) != calls {
+		t.Errorf("repo listed on rejected filters")
+	}
+
+	// A malformed service_id is rejected by the repository and must surface as a 400.
+	e.incidents.listErr = incident.ErrInvalidFilter
+	w = e.do("GET", "/api/incidents?service_id=not-a-uuid", "", eng)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid filter") {
+		t.Errorf("malformed service_id: status = %d (%s), want 400 invalid filter", w.Code, w.Body)
 	}
 }

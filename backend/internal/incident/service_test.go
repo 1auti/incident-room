@@ -3,6 +3,7 @@ package incident_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,6 +16,10 @@ type fakeRepo struct {
 	created  int
 	lastInc  incident.Incident
 	lastEvs  []incident.TimelineEvent
+
+	seeded    []incident.Incident
+	listed    int
+	lastQuery incident.ListQuery
 }
 
 func (f *fakeRepo) FindService(_ context.Context, id string) (incident.ServiceInfo, error) {
@@ -36,6 +41,22 @@ func (f *fakeRepo) Create(_ context.Context, inc incident.Incident, evs []incide
 	}
 	f.lastInc, f.lastEvs = inc, out
 	return inc, out, nil
+}
+
+// List applies q over the seeded incidents, like the real repository does.
+func (f *fakeRepo) List(_ context.Context, q incident.ListQuery) ([]incident.Incident, error) {
+	f.listed++
+	f.lastQuery = q
+	var out []incident.Incident
+	for _, inc := range f.seeded {
+		if !slices.Contains(q.States, inc.State) ||
+			(q.Severity != "" && inc.Severity != q.Severity) ||
+			(q.ServiceID != "" && inc.ServiceID != q.ServiceID) {
+			continue
+		}
+		out = append(out, inc)
+	}
+	return out, nil
 }
 
 var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
@@ -257,5 +278,157 @@ func TestUC025_ServicioInexistenteNoCrea(t *testing.T) {
 	})
 	if !errors.Is(err, incident.ErrServiceNotFound) || repo.created != 0 {
 		t.Errorf("err = %v, created = %d", err, repo.created)
+	}
+}
+
+// seedBoard stores one incident per lifecycle state plus extra ones that differ
+// in severity and service, so filters have something to discriminate.
+func seedBoard(repo *fakeRepo) {
+	mk := func(id string, state incident.State, sev incident.Severity, svc string) incident.Incident {
+		return incident.Incident{ID: id, State: state, Severity: sev, ServiceID: svc}
+	}
+	repo.seeded = []incident.Incident{
+		mk("declared", incident.StateDeclared, incident.SeveritySEV1, "svc-a"),
+		mk("acknowledged", incident.StateAcknowledged, incident.SeveritySEV2, "svc-a"),
+		mk("mitigating", incident.StateMitigating, incident.SeveritySEV1, "svc-b"),
+		mk("resolved", incident.StateResolved, incident.SeveritySEV3, "svc-b"),
+		mk("closed", incident.StateClosed, incident.SeveritySEV1, "svc-a"),
+	}
+}
+
+func ids(list []incident.Incident) []string {
+	out := make([]string, 0, len(list))
+	for _, inc := range list {
+		out = append(out, inc.ID)
+	}
+	return out
+}
+
+func TestBR15_ActivoEsTodoLoNoCerrado(t *testing.T) {
+	repo := newFake()
+	seedBoard(repo)
+	got, err := newSvc(repo).List(context.Background(), engineer, incident.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"declared", "acknowledged", "mitigating", "resolved"}
+	if !slices.Equal(ids(got), want) {
+		t.Errorf("ids = %v, want %v (resuelto stays active, cerrado is out)", ids(got), want)
+	}
+
+	// Filtering by state intersects with the active states; cerrado never lists.
+	for _, tc := range []struct {
+		state     incident.State
+		want      []string
+		wantCalls int
+	}{
+		{incident.StateResolved, []string{"resolved"}, 1},
+		{incident.StateClosed, []string{}, 0},
+	} {
+		t.Run(string(tc.state), func(t *testing.T) {
+			repo := newFake()
+			seedBoard(repo)
+			got, err := newSvc(repo).List(context.Background(), engineer, incident.ListFilter{State: tc.state})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == nil || !slices.Equal(ids(got), tc.want) {
+				t.Errorf("ids = %v (nil %v), want %v non-nil", ids(got), got == nil, tc.want)
+			}
+			if repo.listed != tc.wantCalls {
+				t.Errorf("repo List calls = %d, want %d", repo.listed, tc.wantCalls)
+			}
+			if slices.Contains(repo.lastQuery.States, incident.StateClosed) {
+				t.Errorf("query States %v include cerrado", repo.lastQuery.States)
+			}
+		})
+	}
+}
+
+func TestBR15_FiltrosPorSeveridadServicioYEstado(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		filter  incident.ListFilter
+		want    []string
+		wantErr error
+	}{
+		{"severidad", incident.ListFilter{Severity: incident.SeveritySEV1}, []string{"declared", "mitigating"}, nil},
+		{"servicio", incident.ListFilter{ServiceID: "svc-b"}, []string{"mitigating", "resolved"}, nil},
+		{"estado", incident.ListFilter{State: incident.StateAcknowledged}, []string{"acknowledged"}, nil},
+		{"servicio y estado", incident.ListFilter{ServiceID: "svc-b", State: incident.StateMitigating}, []string{"mitigating"}, nil},
+		{"todos a la vez", incident.ListFilter{Severity: incident.SeveritySEV1, ServiceID: "svc-a", State: incident.StateDeclared}, []string{"declared"}, nil},
+		{"sin coincidencias", incident.ListFilter{Severity: incident.SeveritySEV3, ServiceID: "svc-a"}, []string{}, nil},
+		{"severidad fuera del enum", incident.ListFilter{Severity: "SEV9"}, nil, incident.ErrInvalidFilter},
+		{"estado fuera del enum", incident.ListFilter{State: "dormido"}, nil, incident.ErrInvalidFilter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFake()
+			seedBoard(repo)
+			got, err := newSvc(repo).List(context.Background(), engineer, tc.filter)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if tc.wantErr != nil {
+				if repo.listed != 0 {
+					t.Errorf("repo List calls = %d, want 0", repo.listed)
+				}
+				return
+			}
+			if got == nil || !slices.Equal(ids(got), tc.want) {
+				t.Errorf("ids = %v (nil %v), want %v non-nil", ids(got), got == nil, tc.want)
+			}
+		})
+	}
+}
+
+func TestBR04_EscaladoSeExponeEnListado(t *testing.T) {
+	repo := newFake()
+	seedBoard(repo)
+	at := fixedNow.Add(-time.Hour)
+	repo.seeded[0].EscalatedAt = &at
+	got, err := newSvc(repo).List(context.Background(), engineer, incident.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inc := range got {
+		escalated := inc.EscalatedAt != nil
+		if escalated != (inc.ID == "declared") {
+			t.Errorf("%s escalated_at = %v", inc.ID, inc.EscalatedAt)
+		}
+	}
+	if got[0].EscalatedAt == nil || !got[0].EscalatedAt.Equal(at) {
+		t.Errorf("escalated_at = %v, want %v", got[0].EscalatedAt, at)
+	}
+}
+
+func TestBR10_TodoAutenticadoVeTodosLosIncidentes(t *testing.T) {
+	for _, tc := range []struct {
+		role    user.Role
+		wantErr error
+	}{
+		{user.RoleIngeniero, nil},
+		{user.RoleOncall, nil},
+		{user.RoleAdmin, nil},
+		{"", incident.ErrForbidden},
+		{"visitante", incident.ErrForbidden},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			repo := newFake()
+			seedBoard(repo)
+			// The actor did not declare any seeded incident: visibility is not per owner.
+			got, err := newSvc(repo).List(context.Background(), user.User{ID: "someone-else", Role: tc.role}, incident.ListFilter{})
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if tc.wantErr != nil {
+				if repo.listed != 0 {
+					t.Errorf("repo List calls = %d, want 0", repo.listed)
+				}
+				return
+			}
+			if len(got) != 4 {
+				t.Errorf("ids = %v, want the 4 active incidents", ids(got))
+			}
+		})
 	}
 }
