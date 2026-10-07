@@ -47,6 +47,7 @@ type Services interface {
 type Incidents interface {
 	Suggest(ctx context.Context, actor user.User, serviceID string, impact incident.Impact) (incident.Severity, error)
 	Declare(ctx context.Context, actor user.User, in incident.DeclareInput) (incident.Incident, []incident.TimelineEvent, error)
+	List(ctx context.Context, actor user.User, f incident.ListFilter) ([]incident.Incident, error)
 }
 
 type handlers struct {
@@ -71,6 +72,8 @@ func New(users Users, authn Auth, services Services, incidents Incidents, logger
 	// Every role may declare (BR-10): the service enforces it, so no RequireRole here.
 	mux.Handle("GET /api/incidents/suggested-severity", requireAuth(http.HandlerFunc(h.suggestSeverity)))
 	mux.Handle("POST /api/incidents", requireAuth(http.HandlerFunc(h.declareIncident)))
+	// Every authenticated user sees every active incident (BR-10): no RequireRole.
+	mux.Handle("GET /api/incidents", requireAuth(http.HandlerFunc(h.listIncidents)))
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
 	mux.Handle("GET /api/me", requireAuth(http.HandlerFunc(h.me)))
@@ -241,6 +244,25 @@ func (h *handlers) declareIncident(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"incident": inc, "timeline": events})
 }
 
+// listIncidents takes at most one value per filter; empty means no filter.
+func (h *handlers) listIncidents(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	q := r.URL.Query()
+	list, err := h.incidents.List(r.Context(), actor, incident.ListFilter{
+		Severity:  incident.Severity(q.Get("severity")),
+		ServiceID: q.Get("service_id"),
+		State:     incident.State(q.Get("state")),
+	})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if list == nil {
+		list = []incident.Incident{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
@@ -265,6 +287,8 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, incident.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid incident: title, service_id and impact (caida_total, degradacion or menor) are required and severity must be SEV1, SEV2 or SEV3")
+	case errors.Is(err, incident.ErrInvalidFilter):
+		writeError(w, http.StatusBadRequest, "invalid filter: severity must be SEV1, SEV2 or SEV3, state must be declarado, reconocido, mitigando, resuelto or cerrado and service_id must be a valid id")
 	case errors.Is(err, incident.ErrServiceNotFound):
 		writeError(w, http.StatusBadRequest, "invalid incident: service does not exist")
 	case errors.Is(err, incident.ErrForbidden):

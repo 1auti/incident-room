@@ -41,6 +41,62 @@ func (r *PostgresRepository) FindService(ctx context.Context, id string) (Servic
 	return info, nil
 }
 
+// List returns the incidents matching q, ordered by declared_at DESC, id. The
+// WHERE is built conditionally because casting ” to uuid fails. A malformed
+// service id (22P02) is ErrInvalidFilter; a well-formed unknown one matches nothing.
+func (r *PostgresRepository) List(ctx context.Context, q ListQuery) ([]Incident, error) {
+	states := make([]string, len(q.States))
+	for i, st := range q.States {
+		states[i] = string(st)
+	}
+	sql := `SELECT id, title, description, service_id, impact, suggested_severity, severity, state,
+		declared_by, assigned_to, declared_at, escalated_at
+		FROM incidents WHERE state = ANY($1)`
+	args := []any{states}
+	if q.Severity != "" {
+		args = append(args, string(q.Severity))
+		sql += fmt.Sprintf(" AND severity = $%d", len(args))
+	}
+	if q.ServiceID != "" {
+		args = append(args, q.ServiceID)
+		sql += fmt.Sprintf(" AND service_id = $%d::uuid", len(args))
+	}
+	sql += " ORDER BY declared_at DESC, id"
+
+	rows, err := r.pool.Query(ctx, sql, args...)
+	if pgErrCode(err) == pgInvalidTextRepresen {
+		return nil, ErrInvalidFilter
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list incidents: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Incident{}
+	for rows.Next() {
+		var inc Incident
+		var impact, suggested, severity, state string
+		if err := rows.Scan(&inc.ID, &inc.Title, &inc.Description, &inc.ServiceID, &impact, &suggested, &severity, &state,
+			&inc.DeclaredBy, &inc.AssignedTo, &inc.DeclaredAt, &inc.EscalatedAt); err != nil {
+			return nil, fmt.Errorf("scan incident: %w", err)
+		}
+		inc.Impact, inc.SuggestedSeverity, inc.Severity, inc.State = Impact(impact), Severity(suggested), Severity(severity), State(state)
+		inc.DeclaredAt = inc.DeclaredAt.UTC()
+		if inc.EscalatedAt != nil {
+			at := inc.EscalatedAt.UTC()
+			inc.EscalatedAt = &at
+		}
+		out = append(out, inc)
+	}
+	if err := rows.Err(); err != nil {
+		if pgErrCode(err) == pgInvalidTextRepresen {
+			return nil, ErrInvalidFilter
+		}
+		return nil, fmt.Errorf("list incidents: %w", err)
+	}
+	return out, nil
+}
+
 // Create inserts the incident and its events in one transaction. Event rows
 // are only ever inserted (BR-09).
 func (r *PostgresRepository) Create(ctx context.Context, inc Incident, events []TimelineEvent) (Incident, []TimelineEvent, error) {

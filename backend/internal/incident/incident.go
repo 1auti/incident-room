@@ -11,8 +11,15 @@ import (
 // State is the lifecycle state of an incident.
 type State string
 
-// StateDeclared is the initial state (UC-02). Later states arrive with UC-04/UC-06.
-const StateDeclared State = "declarado"
+// Lifecycle states. StateDeclared is the initial one (UC-02); the transitions
+// between them arrive with UC-04/UC-06.
+const (
+	StateDeclared     State = "declarado"
+	StateAcknowledged State = "reconocido"
+	StateMitigating   State = "mitigando"
+	StateResolved     State = "resuelto"
+	StateClosed       State = "cerrado"
+)
 
 // EventType is the kind of a timeline event.
 type EventType string
@@ -27,6 +34,7 @@ var (
 	ErrInvalid         = errors.New("invalid incident data")
 	ErrServiceNotFound = errors.New("service not found")
 	ErrForbidden       = errors.New("forbidden")
+	ErrInvalidFilter   = errors.New("invalid incident filter")
 )
 
 // Incident is a declared incident.
@@ -42,6 +50,16 @@ type Incident struct {
 	DeclaredBy        string    `json:"declared_by"`
 	AssignedTo        *string   `json:"assigned_to"`
 	DeclaredAt        time.Time `json:"declared_at"`
+	// EscalatedAt is set when the incident was escalated by SLA (BR-04); nil otherwise.
+	EscalatedAt *time.Time `json:"escalated_at"`
+}
+
+// ListQuery is what the repository filters on. States is always set by the
+// service (BR-15); empty Severity or ServiceID means no filter.
+type ListQuery struct {
+	States    []State
+	Severity  Severity
+	ServiceID string
 }
 
 // TimelineEvent is an append-only entry of an incident timeline (BR-09).
@@ -67,8 +85,12 @@ type ServiceInfo struct {
 // FindService returns ErrServiceNotFound when no service matches (including a
 // malformed id). Create stores the incident and its events atomically, filling
 // the generated ids, and returns ErrServiceNotFound if the service disappeared.
+// List returns the incidents matching every filter of q, newest declared_at
+// first (ties by id); never nil-significant. A malformed ServiceID yields
+// ErrInvalidFilter; a well-formed unknown one yields an empty list.
 // There is deliberately no way to update or delete events (BR-09).
 type Repository interface {
+	List(ctx context.Context, q ListQuery) ([]Incident, error)
 	FindService(ctx context.Context, id string) (ServiceInfo, error)
 	Create(ctx context.Context, inc Incident, events []TimelineEvent) (Incident, []TimelineEvent, error)
 }

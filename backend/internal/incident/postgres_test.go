@@ -99,3 +99,108 @@ func TestPostgres_ServicioInexistenteEsErrServiceNotFound(t *testing.T) {
 		t.Errorf("incidents = %d, %v; want 0", n, err)
 	}
 }
+
+func TestPostgres_ListarActivosConFiltros(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	svcRepo := service.NewPostgresRepository(pool)
+	repo := incident.NewPostgresRepository(pool)
+
+	var userID string
+	if err := pool.QueryRow(c, `INSERT INTO users (name, email, password_hash, role) VALUES ('Ana', 'ana@x.com', 'h', 'ingeniero') RETURNING id`).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	pagos, err := svcRepo.Create(c, "Pagos", incident.CriticalityImportant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := svcRepo.Create(c, "Auth", incident.CriticalityStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	escalated := base.Add(20 * time.Minute)
+	type row struct {
+		title    string
+		svc      string
+		sev      incident.Severity
+		state    incident.State
+		minutes  int
+		escalate *time.Time
+	}
+	rows := []row{
+		{"a", pagos.ID, incident.SeveritySEV1, incident.StateDeclared, 0, &escalated},
+		{"b", pagos.ID, incident.SeveritySEV2, incident.StateMitigating, 1, nil},
+		{"c", auth.ID, incident.SeveritySEV1, incident.StateResolved, 2, nil},
+		{"d", auth.ID, incident.SeveritySEV3, incident.StateAcknowledged, 3, nil},
+		{"e", pagos.ID, incident.SeveritySEV1, incident.StateClosed, 4, nil},
+	}
+	idOf := map[string]string{}
+	for _, r := range rows {
+		var id string
+		if err := pool.QueryRow(c, `
+			INSERT INTO incidents (title, service_id, impact, suggested_severity, severity, state, declared_by, declared_at, escalated_at)
+			VALUES ($1, $2, 'menor', $3, $3, $4, $5, $6, $7) RETURNING id`,
+			r.title, r.svc, string(r.sev), string(r.state), userID, base.Add(time.Duration(r.minutes)*time.Minute), r.escalate,
+		).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		idOf[r.title] = id
+	}
+	active := []incident.State{incident.StateDeclared, incident.StateAcknowledged, incident.StateMitigating, incident.StateResolved}
+
+	titles := func(list []incident.Incident) string {
+		out := ""
+		for _, inc := range list {
+			out += inc.Title
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		q    incident.ListQuery
+		want string
+	}{
+		{"activos, mas nuevo primero", incident.ListQuery{States: active}, "dcba"},
+		{"un estado", incident.ListQuery{States: []incident.State{incident.StateResolved}}, "c"},
+		{"severidad", incident.ListQuery{States: active, Severity: incident.SeveritySEV1}, "ca"},
+		{"servicio", incident.ListQuery{States: active, ServiceID: auth.ID}, "dc"},
+		{"servicio y estado", incident.ListQuery{States: []incident.State{incident.StateMitigating}, ServiceID: pagos.ID}, "b"},
+		{"todos los filtros", incident.ListQuery{States: active, Severity: incident.SeveritySEV1, ServiceID: pagos.ID}, "a"},
+		{"sin coincidencias", incident.ListQuery{States: active, Severity: incident.SeveritySEV3, ServiceID: pagos.ID}, ""},
+		{"servicio inexistente", incident.ListQuery{States: active, ServiceID: "00000000-0000-0000-0000-000000000000"}, ""},
+		{"sin estados", incident.ListQuery{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := repo.List(c, tc.q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == nil || titles(got) != tc.want {
+				t.Errorf("titles = %q (nil %v), want %q non-nil", titles(got), got == nil, tc.want)
+			}
+		})
+	}
+
+	got, err := repo.List(c, incident.ListQuery{States: active})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inc := range got {
+		isEscalated := inc.EscalatedAt != nil
+		if isEscalated != (inc.Title == "a") {
+			t.Errorf("%s escalated_at = %v", inc.Title, inc.EscalatedAt)
+		}
+		if inc.ID != idOf[inc.Title] || inc.DeclaredAt.Location() != time.UTC {
+			t.Errorf("incident = %+v", inc)
+		}
+	}
+	if a := got[3]; a.EscalatedAt == nil || !a.EscalatedAt.Equal(escalated) || a.EscalatedAt.Location() != time.UTC {
+		t.Errorf("a escalated_at = %v, want %v in UTC", a.EscalatedAt, escalated)
+	}
+
+	if _, err := repo.List(c, incident.ListQuery{States: active, ServiceID: "not-a-uuid"}); !errors.Is(err, incident.ErrInvalidFilter) {
+		t.Errorf("malformed service id err = %v, want ErrInvalidFilter", err)
+	}
+}
