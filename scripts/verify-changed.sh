@@ -8,8 +8,21 @@ cd "$(git rev-parse --show-toplevel)"
 source scripts/lib/go-affected.sh
 
 base=${BASE_REF:-main}
+if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+  echo "verify-changed: base ref '$base' not found (set BASE_REF, or fetch full history: git fetch --unshallow)" >&2
+  exit 1
+fi
 # Committed, staged and unstaged changes vs the base, plus untracked files.
-mapfile -t changed < <({ git diff --name-only --diff-filter=ACMRD "$base" --; git ls-files -o --exclude-standard; } | sort -u)
+# Captured into variables first so a failing git command is not hidden inside a process substitution.
+tracked=$(git diff --name-only --diff-filter=ACMRD "$base" --) || {
+  echo "verify-changed: git diff against '$base' failed" >&2
+  exit 1
+}
+untracked=$(git ls-files -o --exclude-standard) || {
+  echo "verify-changed: git ls-files failed" >&2
+  exit 1
+}
+mapfile -t changed < <(printf '%s\n%s\n' "$tracked" "$untracked" | awk 'NF' | sort -u)
 
 echo "== verify-changed: Go packages (changed vs $base, plus dependents)"
 mapfile -t pkgs < <(go_affected_packages "${changed[@]}")

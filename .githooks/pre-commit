@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tool-independent gate: applies the same to Claude Code, opencode or manual edits.
 # Staged-only checks to keep commits fast. The full `make verify` still runs in the Claude Code
-# Stop hook and is the single source of truth for CI.
+# Stop hook and is the safety net (there is no CI yet).
 set -uo pipefail
 export PATH="$PATH:$HOME/go/bin:$HOME/.local/bin"
 cd "$(git rev-parse --show-toplevel)"
@@ -12,7 +12,7 @@ fail=0
 step() { printf '\n== pre-commit: %s\n' "$1"; }
 need() { command -v "$1" >/dev/null || { echo "pre-commit: missing tool '$1'" >&2; exit 1; }; }
 
-mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMRD)
 ((${#staged[@]})) || exit 0
 
 go_files=()
@@ -21,14 +21,14 @@ fe_files=()
 frontend_changed=0
 for f in "${staged[@]}"; do
   case "$f" in
-    backend/*.go) go_files+=("$f") ;;
+    backend/*.go) [[ -e "$f" ]] && go_files+=("$f") ;; # deleted files are only used for package selection
   esac
   case "$f" in
     backend/*) backend_changed=1 ;;
     frontend/*) frontend_changed=1 ;;
   esac
   case "$f" in
-    frontend/*.ts | frontend/*.tsx) fe_files+=("${f#frontend/}") ;;
+    frontend/*.ts | frontend/*.tsx) [[ -e "$f" ]] && fe_files+=("${f#frontend/}") ;;
   esac
 done
 
