@@ -135,6 +135,22 @@ func (r *PostgresRepository) SetOncall(ctx context.Context, id, userID string, a
 		return current, nil
 	}
 
+	// BR-11 vs BR-19: lock the target user FOR SHARE and check the role in this
+	// transaction. A concurrent demotion locks the row FOR UPDATE, so it either
+	// committed first (the role is seen here) or waits until this commit and
+	// then sees the service as assigned.
+	var role string
+	err = tx.QueryRow(ctx, `SELECT role FROM users WHERE id = $1 FOR SHARE`, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+		return Service{}, ErrInvalidOncall
+	}
+	if err != nil {
+		return Service{}, fmt.Errorf("lock on-call user: %w", err)
+	}
+	if role != "oncall" {
+		return Service{}, ErrInvalidOncall
+	}
+
 	updated, err := scanService(tx.QueryRow(ctx,
 		`UPDATE services SET oncall_user_id = $1 WHERE id = $2 RETURNING `+serviceColumns, userID, id))
 	if pgErrCode(err) == pgForeignKeyViolation || pgErrCode(err) == pgInvalidTextRepresen {

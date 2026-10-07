@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"incident-room-backend/internal/dbtest"
 	"incident-room-backend/internal/user"
 )
@@ -88,5 +90,101 @@ func TestPostgres_ListByRoleYEsOncallDeAlgunServicio(t *testing.T) {
 	}
 	if ok, err := repo.IsOncallOfAnyService(ctx, "nope"); err != nil || ok {
 		t.Errorf("IsOncallOfAnyService malformed id = %v, %v; want false", ok, err)
+	}
+}
+
+func newOncallWithService(t *testing.T, pool *pgxpool.Pool, repo *user.PostgresRepository) user.User {
+	t.Helper()
+	ana, err := repo.Create(context.Background(), user.User{Name: "Ana", Email: "ana@x.com", Role: user.RoleOncall, PasswordHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `INSERT INTO services (name, criticality, oncall_user_id) VALUES ('Pagos', 'estandar', $1)`, ana.ID); err != nil {
+		t.Fatal(err)
+	}
+	return ana
+}
+
+func TestBR19_PostgresUpdateRoleGuarded(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.Pool(t)
+	repo := user.NewPostgresRepository(pool)
+	ana := newOncallWithService(t, pool, repo)
+	free, err := repo.Create(ctx, user.User{Name: "Bruno", Email: "bruno@x.com", Role: user.RoleOncall, PasswordHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.UpdateRoleGuarded(ctx, ana.ID, user.RoleAdmin); !errors.Is(err, user.ErrOncallAssigned) {
+		t.Errorf("demote assigned on-call err = %v, want ErrOncallAssigned", err)
+	}
+	if got, _ := repo.FindByID(ctx, ana.ID); got.Role != user.RoleOncall {
+		t.Errorf("role after rejected demotion = %s, want oncall", got.Role)
+	}
+	if err := repo.UpdateRoleGuarded(ctx, ana.ID, user.RoleOncall); err != nil {
+		t.Errorf("keeping oncall err = %v, want nil", err)
+	}
+	if err := repo.UpdateRoleGuarded(ctx, free.ID, user.RoleAdmin); err != nil {
+		t.Errorf("demote free on-call err = %v, want nil", err)
+	}
+	if got, _ := repo.FindByID(ctx, free.ID); got.Role != user.RoleAdmin {
+		t.Errorf("role = %s, want admin", got.Role)
+	}
+	for _, id := range []string{"nope", "00000000-0000-0000-0000-000000000000"} {
+		if err := repo.UpdateRoleGuarded(ctx, id, user.RoleAdmin); !errors.Is(err, user.ErrNotFound) {
+			t.Errorf("missing user %q err = %v, want ErrNotFound", id, err)
+		}
+	}
+}
+
+// BR-19 vs BR-11: an assignment that is in flight (user locked FOR SHARE, service
+// updated, not committed) makes a concurrent demotion wait, and once the
+// assignment commits the demotion sees the service and fails.
+func TestBR19_PostgresDegradacionEsperaAsignacionEnCurso(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.Pool(t)
+	repo := user.NewPostgresRepository(pool)
+	ana, err := repo.Create(ctx, user.User{Name: "Ana", Email: "ana@x.com", Role: user.RoleOncall, PasswordHash: "h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serviceID string
+	if err := pool.QueryRow(ctx, `INSERT INTO services (name, criticality) VALUES ('Pagos', 'estandar') RETURNING id`).Scan(&serviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var pid int32
+	var role string
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT role FROM users WHERE id = $1 FOR SHARE`, ana.ID).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE services SET oncall_user_id = $1 WHERE id = $2`, ana.ID, serviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- repo.UpdateRoleGuarded(ctx, ana.ID, user.RoleAdmin) }()
+	dbtest.WaitBlockedBy(t, pool, pid)
+	select {
+	case err := <-done:
+		t.Fatalf("demotion finished while the assignment was uncommitted: %v", err)
+	default:
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, user.ErrOncallAssigned) {
+		t.Fatalf("demotion err = %v, want ErrOncallAssigned", err)
+	}
+	if got, _ := repo.FindByID(ctx, ana.ID); got.Role != user.RoleOncall {
+		t.Errorf("role = %s, want oncall", got.Role)
 	}
 }

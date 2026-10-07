@@ -65,10 +65,18 @@ func (f *fakeRepo) FindByID(_ context.Context, id string) (user.User, error) {
 	return u, nil
 }
 
-func (f *fakeRepo) UpdateRole(_ context.Context, id string, role user.Role) error {
+// UpdateRole is the unguarded update: ChangeRole must never use it (BR-19 race).
+func (f *fakeRepo) UpdateRole(context.Context, string, user.Role) error {
+	return errors.New("unguarded UpdateRole used by ChangeRole")
+}
+
+func (f *fakeRepo) UpdateRoleGuarded(_ context.Context, id string, role user.Role) error {
 	u, ok := f.users[id]
 	if !ok {
 		return user.ErrNotFound
+	}
+	if role != user.RoleOncall && f.oncallOf[id] {
+		return user.ErrOncallAssigned
 	}
 	u.Role = role
 	f.users[id] = u

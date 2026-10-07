@@ -53,4 +53,9 @@ type Repository interface {
 	ListByRole(ctx context.Context, role Role) ([]User, error)
 	// IsOncallOfAnyService reports whether the user is oncall_user_id of some service.
 	IsOncallOfAnyService(ctx context.Context, id string) (bool, error)
+	// UpdateRoleGuarded sets the role atomically (BR-19): it locks the user row
+	// and returns ErrOncallAssigned, changing nothing, when the new role is not
+	// oncall and the user is the on-call of some service. It returns ErrNotFound
+	// when no user matches.
+	UpdateRoleGuarded(ctx context.Context, id string, role Role) error
 }

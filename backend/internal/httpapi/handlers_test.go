@@ -90,6 +90,16 @@ func (f *fakeUsers) UpdateRole(_ context.Context, id string, r user.Role) error 
 	return user.ErrNotFound
 }
 
+func (f *fakeUsers) UpdateRoleGuarded(ctx context.Context, id string, r user.Role) error {
+	f.mu.Lock()
+	blocked := r != user.RoleOncall && f.oncallOf[id]
+	f.mu.Unlock()
+	if blocked {
+		return user.ErrOncallAssigned
+	}
+	return f.UpdateRole(ctx, id, r)
+}
+
 func (f *fakeUsers) ExistsAdmin(context.Context) (bool, error) {
 	_, err := f.find(func(u user.User) bool { return u.Role == user.RoleAdmin })
 	return err == nil, nil

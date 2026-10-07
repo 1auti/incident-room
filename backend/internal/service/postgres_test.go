@@ -267,3 +267,73 @@ func TestPostgres_SetOncallReasignaSoloActivos(t *testing.T) {
 		t.Errorf("same on-call added events: %d", count(declared))
 	}
 }
+
+// BR-11 vs BR-19: a demotion in flight (user locked FOR UPDATE, role changed,
+// not committed) makes a concurrent assignment wait, and once the demotion
+// commits the assignment sees the new role and fails with ErrInvalidOncall.
+func TestBR11_PostgresAsignacionEsperaDegradacionEnCurso(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := service.NewPostgresRepository(pool)
+	ana := insertUser(t, pool, "ana", "oncall")
+	admin := insertUser(t, pool, "root", "admin")
+	s, err := repo.Create(c, "Pagos", incident.CriticalityStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := incident.TimelineEvent{Type: incident.EventAssignment, AuthorID: &admin, Data: map[string]string{"to": ana}, OccurredAt: time.Now().UTC()}
+
+	tx, err := pool.Begin(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(c) }()
+	var pid int32
+	var role string
+	if err := tx.QueryRow(c, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRow(c, `SELECT role FROM users WHERE id = $1 FOR UPDATE`, ana).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(c, `UPDATE users SET role = 'admin' WHERE id = $1`, ana); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := repo.SetOncall(c, s.ID, ana, incident.ActiveStates(), ev)
+		done <- err
+	}()
+	dbtest.WaitBlockedBy(t, pool, pid)
+	select {
+	case err := <-done:
+		t.Fatalf("assignment finished while the demotion was uncommitted: %v", err)
+	default:
+	}
+	if err := tx.Commit(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, service.ErrInvalidOncall) {
+		t.Fatalf("assignment err = %v, want ErrInvalidOncall", err)
+	}
+	var stored *string
+	if err := pool.QueryRow(c, `SELECT oncall_user_id FROM services WHERE id = $1`, s.ID).Scan(&stored); err != nil || stored != nil {
+		t.Errorf("service changed by a rejected assignment: %v, %v", stored, err)
+	}
+}
+
+func TestBR11_PostgresSetOncallRechazaDestinoSinRolOncall(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := service.NewPostgresRepository(pool)
+	eng := insertUser(t, pool, "eng", "ingeniero")
+	s, err := repo.Create(c, "Pagos", incident.CriticalityStandard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := incident.TimelineEvent{Type: incident.EventAssignment, Data: map[string]string{"to": eng}, OccurredAt: time.Now().UTC()}
+	if _, err := repo.SetOncall(c, s.ID, eng, incident.ActiveStates(), ev); !errors.Is(err, service.ErrInvalidOncall) {
+		t.Fatalf("err = %v, want ErrInvalidOncall", err)
+	}
+}

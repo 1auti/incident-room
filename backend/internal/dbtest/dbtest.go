@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -61,4 +62,26 @@ func Pool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("migrate: %v", err)
 	}
 	return pool
+}
+
+// WaitBlockedBy blocks until some backend is waiting on a lock held by the
+// backend with the given pid, or fails the test after a deadline. It makes
+// lock-ordering tests deterministic without sleeping for a fixed time.
+func WaitBlockedBy(t *testing.T, pool *pgxpool.Pool, holderPID int32) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var n int
+		if err := pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid))`, holderPID).Scan(&n); err != nil {
+			t.Fatalf("check blocked backends: %v", err)
+		}
+		if n > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no backend became blocked by pid %d", holderPID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

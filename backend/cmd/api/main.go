@@ -16,6 +16,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,6 +33,7 @@ import (
 const (
 	sessionTTL                = 24 * time.Hour
 	defaultEscalationInterval = 10 * time.Second
+	shutdownTimeout           = 10 * time.Second
 )
 
 func main() {
@@ -40,7 +43,8 @@ func main() {
 }
 
 func run() error {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		return errors.New("DATABASE_URL is required")
@@ -82,7 +86,17 @@ func run() error {
 		}
 	}
 
-	go runEscalation(ctx, incidentSvc, escalationInterval, logger)
+	// Deferred after pool.Close, so it runs first: the ticker goroutine must
+	// finish before the pool is closed.
+	escalationDone := make(chan struct{})
+	defer func() {
+		stop()
+		<-escalationDone
+	}()
+	go func() {
+		defer close(escalationDone)
+		runEscalation(ctx, incidentSvc, escalationInterval, logger)
+	}()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -90,12 +104,32 @@ func run() error {
 	}
 	log.Printf("listening on :%s", port)
 	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, logger), ReadHeaderTimeout: 10 * time.Second}
-	return srv.ListenAndServe()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ListenAndServe() }()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+	}
+	log.Printf("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown server: %w", err)
+	}
+	return nil
+}
+
+// overdueEscalator is the part of the incident service the ticker needs.
+type overdueEscalator interface {
+	EscalateOverdue(ctx context.Context) (int, error)
 }
 
 // runEscalation evaluates overdue incidents every interval until ctx is done.
-// A failed evaluation is logged and never stops the server (BR-04).
-func runEscalation(ctx context.Context, svc *incident.Service, interval time.Duration, logger *slog.Logger) {
+// A failed evaluation is logged and never stops the server (BR-04). There is
+// no evaluation before the first tick.
+func runEscalation(ctx context.Context, svc overdueEscalator, interval time.Duration, logger *slog.Logger) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

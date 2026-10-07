@@ -37,21 +37,10 @@ func (s *Service) ChangeRole(ctx context.Context, actor User, targetID string, r
 	if role != RoleOncall && role != RoleAdmin {
 		return ErrForbidden
 	}
-	target, err := s.repo.FindByID(ctx, targetID)
-	if err != nil {
-		return fmt.Errorf("find user: %w", err)
-	}
-	// BR-19: an on-call of a service keeps the role until the service has another on-call.
-	if target.Role == RoleOncall && role != RoleOncall {
-		assigned, err := s.repo.IsOncallOfAnyService(ctx, targetID)
-		if err != nil {
-			return fmt.Errorf("check on-call: %w", err)
-		}
-		if assigned {
-			return ErrOncallAssigned
-		}
-	}
-	if err := s.repo.UpdateRole(ctx, targetID, role); err != nil {
+	// BR-19: an on-call of a service keeps the role until the service has another
+	// on-call. The repository checks and updates atomically, so a concurrent
+	// assignment cannot slip in between.
+	if err := s.repo.UpdateRoleGuarded(ctx, targetID, role); err != nil {
 		return fmt.Errorf("update role: %w", err)
 	}
 	return nil
