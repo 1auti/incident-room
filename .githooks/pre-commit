@@ -1,3 +1,87 @@
 #!/usr/bin/env bash
-# Puerta independiente de la herramienta: aplica igual a Claude Code, opencode o edición manual.
-exec make verify
+# Tool-independent gate: applies the same to Claude Code, opencode or manual edits.
+# Staged-only checks to keep commits fast. The full `make verify` still runs in the Claude Code
+# Stop hook and is the single source of truth for CI.
+set -uo pipefail
+export PATH="$PATH:$HOME/go/bin:$HOME/.local/bin"
+cd "$(git rev-parse --show-toplevel)"
+
+fail=0
+step() { printf '\n== pre-commit: %s\n' "$1"; }
+need() { command -v "$1" >/dev/null || { echo "pre-commit: missing tool '$1'" >&2; exit 1; }; }
+
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
+((${#staged[@]})) || exit 0
+
+go_files=()
+backend_changed=0
+all_go=0
+fe_files=()
+frontend_changed=0
+for f in "${staged[@]}"; do
+  case "$f" in
+    backend/go.mod | backend/go.sum) all_go=1 ;;
+  esac
+  case "$f" in
+    backend/*.go) go_files+=("$f") ;;
+  esac
+  case "$f" in
+    backend/*) backend_changed=1 ;;
+    frontend/*) frontend_changed=1 ;;
+  esac
+  case "$f" in
+    frontend/*.ts | frontend/*.tsx) fe_files+=("${f#frontend/}") ;;
+  esac
+done
+
+if ((backend_changed)); then
+  need go
+  # Formatting of staged Go files (gofumpt is a stricter gofmt).
+  if ((${#go_files[@]})); then
+    step "gofumpt -l (staged Go files)"
+    if command -v gofumpt >/dev/null; then fmt=gofumpt; else need gofmt; fmt=gofmt; fi
+    unformatted=$("$fmt" -l "${go_files[@]}")
+    if [[ -n "$unformatted" ]]; then
+      printf '%s\n' "$unformatted" >&2
+      echo "Unformatted files: run '$fmt -w <file>'." >&2
+      fail=1
+    fi
+  fi
+
+  # Affected packages: those with staged files plus every package that depends on them.
+  step "go vet + go test (affected packages)"
+  if ((all_go)); then
+    pkgs=(./...)
+  else
+    changed_dirs=$(for f in "${staged[@]}"; do [[ "$f" == backend/* ]] && dirname "${f#backend/}"; done | sort -u)
+    mapfile -t changed < <(cd backend && for d in $changed_dirs; do go list "./$d" 2>/dev/null; done)
+    if ((${#changed[@]})); then
+      mapfile -t pkgs < <(cd backend && go list -f '{{.ImportPath}} {{join .Deps " "}}' ./... |
+        awk -v changed="${changed[*]}" 'BEGIN { n = split(changed, c, " "); for (i = 1; i <= n; i++) want[c[i]] = 1 }
+          { for (i = 1; i <= NF; i++) if ($i in want) { print $1; break } }')
+    else
+      pkgs=()
+    fi
+  fi
+  if ((${#pkgs[@]})); then
+    (cd backend && go vet "${pkgs[@]}" && go test "${pkgs[@]}") || fail=1
+  else
+    echo "no affected Go packages"
+  fi
+fi
+
+if ((frontend_changed)); then
+  if ((${#fe_files[@]})); then
+    step "oxlint + prettier --check (staged frontend files)"
+    (cd frontend && npx --no-install oxlint "${fe_files[@]}") || fail=1
+    (cd frontend && npx --no-install prettier --check "${fe_files[@]}") || fail=1
+  fi
+  step "tsc (typecheck, no emit)"
+  (cd frontend && npx --no-install tsc -b) || fail=1
+fi
+
+if ((fail)); then
+  printf '\npre-commit failed. Fix the issues above (never use --no-verify).\n' >&2
+  exit 1
+fi
+exit 0
