@@ -84,3 +84,13 @@ Una entrada por iteración relevante. Es la materia prima del README.
 - **Ajuste a las reglas de contexto:** `docs/domain.md` gana BR-20 y aclara que el nombre de servicio es único sin distinguir mayúsculas; `specs/UC-11-gestion-servicios.md` es nuevo. Lección: en una rama apilada la review nativa mide contra `main` y vuelve a revisar el trabajo ya aprobado; conviene pedirla sobre un candidato acotado.
 
 ---
+
+### 2026-10-06 — Herramientas — Tooling de lectura, escritura y verificación para agentes
+- **Herramienta / agente:** Claude Code (orquestador) y un escritor delegado (Sonnet)
+- **Prompt o comando:** pedido ad hoc de configurar herramientas de código para agentes, en la rama `chore/agent-code-tools`; seguimiento en `odd/tasks/agent-code-tools.md`
+- **Qué propuso el agente:** hook post-edit acotado al paquete editado (`go vet ./<pkg>/`) con gofumpt, goimports y prettier; pre-commit con chequeos solo de lo staged (el hook Stop conserva `make verify` completo); golangci-lint v2 mínimo como `lint-backend` dentro de `verify-backend`; `make verify-changed` (tests Go de lo cambiado vs `main` y `vitest --changed`); prettier y vitest como únicas dependencias nuevas del frontend; `make tools` para instalar/verificar herramientas; guía de lectura en `AGENTS.md` y `docs/tooling-decisions.md`.
+- **Qué falló y qué capa lo detectó:** `brew` no existe en el sistema (Arch): ast-grep y typescript-language-server se instalaron con npm y gofumpt/goimports con `go install`. Prettier con el ancho por defecto marcaba casi todo el código existente; lo detectó la corrida de `prettier --check`.
+- **Corrección / decisión:** `printWidth` 120 para igualar el estilo previo; el código que aún difiere no se reformateó (tooling puro). El pre-commit solo chequea archivos staged, por eso no bloquea por deuda de formato preexistente. Decisiones de herramientas implementadas, pospuestas y descartadas en `docs/tooling-decisions.md`.
+- **Ajuste a las reglas de contexto:** `AGENTS.md`: sección "Lectura y búsqueda de código" y `make verify` incluye golangci-lint.
+
+---
