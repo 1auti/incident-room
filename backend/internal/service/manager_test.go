@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/service"
@@ -20,6 +21,50 @@ type fakeRepo struct {
 	depErr    error
 	calls     int
 	seq       int
+
+	setCalls  int
+	setID     string
+	setUser   string
+	setStates []incident.State
+	setEvent  incident.TimelineEvent
+}
+
+func (f *fakeRepo) SetOncall(_ context.Context, id, userID string, active []incident.State, ev incident.TimelineEvent) (service.Service, error) {
+	f.calls++
+	f.setCalls++
+	f.setID, f.setUser, f.setStates, f.setEvent = id, userID, active, ev
+	s, ok := f.items[id]
+	if !ok {
+		return service.Service{}, service.ErrNotFound
+	}
+	s.OncallUserID = &userID
+	f.items[id] = s
+	return s, nil
+}
+
+// fakeUsers resolves users by id like user.Repository.FindByID.
+type fakeUsers map[string]user.User
+
+func (f fakeUsers) FindByID(_ context.Context, id string) (user.User, error) {
+	u, ok := f[id]
+	if !ok {
+		return user.User{}, user.ErrNotFound
+	}
+	return u, nil
+}
+
+var (
+	fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	users    = fakeUsers{
+		"u-oc":  {ID: "u-oc", Role: user.RoleOncall},
+		"u-oc2": {ID: "u-oc2", Role: user.RoleOncall},
+		"u-ing": {ID: "u-ing", Role: user.RoleIngeniero},
+		"u-adm": {ID: "u-adm", Role: user.RoleAdmin},
+	}
+)
+
+func newManager(repo *fakeRepo) *service.Manager {
+	return service.NewManager(repo, users, func() time.Time { return fixedNow })
 }
 
 func newFakeRepo() *fakeRepo {
@@ -119,7 +164,7 @@ var (
 func seeded(t *testing.T) (*service.Manager, *fakeRepo, service.Service) {
 	t.Helper()
 	repo := newFakeRepo()
-	m := service.NewManager(repo)
+	m := newManager(repo)
 	s, err := m.Create(ctx, admin, "Pagos", incident.CriticalityImportant)
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +220,7 @@ func TestBR01_CriticidadValidaAlGestionarServicio(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("create/"+string(tc.crit), func(t *testing.T) {
 			repo := newFakeRepo()
-			s, err := service.NewManager(repo).Create(ctx, admin, "Svc", tc.crit)
+			s, err := newManager(repo).Create(ctx, admin, "Svc", tc.crit)
 			if tc.ok {
 				if err != nil || s.Criticality != tc.crit {
 					t.Fatalf("Create = %+v, %v", s, err)
@@ -204,7 +249,7 @@ func TestBR01_CriticidadValidaAlGestionarServicio(t *testing.T) {
 }
 
 func TestUC111_CrearSinOncall(t *testing.T) {
-	m := service.NewManager(newFakeRepo())
+	m := newManager(newFakeRepo())
 	s, err := m.Create(ctx, admin, "  Auth  ", incident.CriticalityCritical)
 	if err != nil {
 		t.Fatal(err)
@@ -294,5 +339,75 @@ func TestBR20_ErrorAlConsultarDependenciasNoBorra(t *testing.T) {
 	}
 	if _, ok := repo.items[s.ID]; !ok {
 		t.Errorf("service removed despite dependency check failure (must fail closed)")
+	}
+}
+
+func TestBR12_SoloAdminAsignaOncall(t *testing.T) {
+	for _, actor := range []user.User{ingenier, oncall, {ID: "x", Role: "visitante"}} {
+		t.Run(string(actor.Role), func(t *testing.T) {
+			m, repo, s := seeded(t)
+			before, calls := repo.snapshot(), repo.calls
+			if _, err := m.SetOncall(ctx, actor, s.ID, "u-oc"); !errors.Is(err, service.ErrForbidden) {
+				t.Fatalf("err = %v, want ErrForbidden", err)
+			}
+			if repo.calls != calls || repo.setCalls != 0 || !sameItems(before, repo.items) {
+				t.Errorf("forbidden action touched the repository")
+			}
+		})
+	}
+	m, _, s := seeded(t)
+	got, err := m.SetOncall(ctx, admin, s.ID, "u-oc")
+	if err != nil || got.OncallUserID == nil || *got.OncallUserID != "u-oc" {
+		t.Errorf("admin SetOncall = %+v, %v", got, err)
+	}
+}
+
+func TestBR11_SoloUsuarioOncallEsAsignable(t *testing.T) {
+	for _, tc := range []struct {
+		name, target string
+		wantErr      error
+	}{
+		{"usuario oncall", "u-oc", nil},
+		{"ingeniero", "u-ing", service.ErrInvalidOncall},
+		{"admin", "u-adm", service.ErrInvalidOncall},
+		{"inexistente", "nope", service.ErrInvalidOncall},
+		{"vacio", "", service.ErrInvalidOncall},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, repo, s := seeded(t)
+			before := repo.snapshot()
+			_, err := m.SetOncall(ctx, admin, s.ID, tc.target)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if tc.wantErr != nil && (repo.setCalls != 0 || !sameItems(before, repo.items)) {
+				t.Errorf("rejected assignment changed the service")
+			}
+		})
+	}
+}
+
+func TestBR11_CambioOncallReasignaIncidentesActivos(t *testing.T) {
+	m, repo, s := seeded(t)
+	if _, err := m.SetOncall(ctx, admin, s.ID, "u-oc2"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.setCalls != 1 || repo.setID != s.ID || repo.setUser != "u-oc2" {
+		t.Fatalf("SetOncall calls = %d id = %q user = %q", repo.setCalls, repo.setID, repo.setUser)
+	}
+	// Every state but cerrado is active (BR-15): resuelto is reassigned, cerrado is not.
+	want := []incident.State{incident.StateDeclared, incident.StateAcknowledged, incident.StateMitigating, incident.StateResolved}
+	if len(repo.setStates) != len(want) {
+		t.Fatalf("active states = %v, want %v", repo.setStates, want)
+	}
+	for i, st := range want {
+		if repo.setStates[i] != st {
+			t.Errorf("active states = %v, want %v", repo.setStates, want)
+		}
+	}
+	ev := repo.setEvent
+	if ev.Type != incident.EventAssignment || ev.AuthorID == nil || *ev.AuthorID != "u-admin" ||
+		!ev.OccurredAt.Equal(fixedNow) || ev.Data["to"] != "u-oc2" {
+		t.Errorf("event template = %+v, want asignacion by the admin at the injected clock to u-oc2", ev)
 	}
 }

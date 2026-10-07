@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 import pg from 'pg'
 
-// DEBT: the states beyond "declarado" and escalated_at are seeded with SQL straight into the
-// e2e database (DATABASE_URL, exported by `make e2e`, which is disposable). This is a deliberate,
-// e2e-only use of `pg`: no API can move an incident through the lifecycle or escalate it yet.
-// When UC-04 (SLA escalation, BR-04) and UC-06 (state transitions) exist, replace seedState and
-// seedEscalated with API calls and adjust these tests.
+// DEBT: the states beyond "declarado" are seeded with SQL straight into the e2e database
+// (DATABASE_URL, exported by `make e2e`, which is disposable). This is a deliberate, e2e-only use
+// of `pg`: no API can move an incident through the lifecycle beyond T1 yet. When UC-06 (state
+// transitions) exists, replace seedState with API calls and adjust these tests.
+// Escalation is real since UC-04: the backend ticker escalates incidents whose declared_at is
+// moved into the past (seedExpired).
 
 const adminEmail = process.env.ADMIN_EMAIL ?? ''
 const adminPassword = process.env.ADMIN_PASSWORD ?? ''
@@ -101,11 +102,15 @@ async function seedState(id: string, state: string): Promise<void> {
   })
 }
 
-async function seedEscalated(id: string): Promise<void> {
+// Makes the SLA of a SEV2 incident (15 minutes) expire; the backend ticker escalates it (BR-04).
+async function seedExpired(ctx: APIRequestContext, id: string): Promise<void> {
   await withDb(async (c) => {
-    const res = await c.query('UPDATE incidents SET escalated_at = now() WHERE id = $1', [id])
+    const res = await c.query("UPDATE incidents SET declared_at = now() - interval '16 minutes' WHERE id = $1", [id])
     expect(res.rowCount).toBe(1)
   })
+  await expect
+    .poll(async () => ((await (await ctx.get(`/api/incidents/${id}`)).json()) as IncidentDto).escalated_at, { timeout: 15_000 })
+    .not.toBeNull()
 }
 
 async function loginUi(page: Page, email: string): Promise<void> {
@@ -204,7 +209,7 @@ test('UC-03.4 only the SLA-escalated incident shows the Escalado indicator (BR-0
   const svc = await createService(admin)
   const escalated = await declare(admin, svc.id)
   const normal = await declare(admin, svc.id)
-  await seedEscalated(escalated.id)
+  await seedExpired(admin, escalated.id)
 
   const { email } = await registerUser(playwright, baseURL, admin, 'ingeniero')
   await loginUi(page, email)

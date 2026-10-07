@@ -4,10 +4,12 @@ import {
   createService,
   deleteService,
   listServices,
+  setServiceOncall,
   updateService,
   type Criticality,
   type Service,
 } from '../../api/services'
+import { listUsers } from '../../api/users'
 
 interface Props {
   user: User
@@ -51,6 +53,8 @@ export function ServicesPage({ user }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [editCriticality, setEditCriticality] = useState<Criticality>('estandar')
+  const [oncallUsers, setOncallUsers] = useState<User[]>([])
+  const [oncallChoice, setOncallChoice] = useState<Record<string, string>>({})
 
   const refresh = useCallback(async () => {
     try {
@@ -73,6 +77,22 @@ export function ServicesPage({ user }: Props) {
       active = false
     }
   }, [])
+
+  // Only the admin may assign an on-call (BR-12), so only the admin loads the candidates.
+  useEffect(() => {
+    if (!isAdmin) return
+    let active = true
+    listUsers('oncall')
+      .then((list) => {
+        if (active) setOncallUsers(list)
+      })
+      .catch((err: unknown) => {
+        if (active) setError(messageOf(err))
+      })
+    return () => {
+      active = false
+    }
+  }, [isAdmin])
 
   async function run(action: () => Promise<void>) {
     setError(null)
@@ -159,6 +179,31 @@ export function ServicesPage({ user }: Props) {
                     </form>
                   ) : (
                     <>
+                      <select
+                        data-testid="service-oncall-select"
+                        aria-label="On-call del servicio"
+                        value={oncallChoice[s.id] ?? s.oncall_user_id ?? ''}
+                        onChange={(e) => setOncallChoice({ ...oncallChoice, [s.id]: e.target.value })}
+                      >
+                        <option value="">Seleccionar on-call</option>
+                        {oncallUsers.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        data-testid="service-oncall-submit"
+                        type="button"
+                        disabled={(oncallChoice[s.id] ?? s.oncall_user_id ?? '') === ''}
+                        onClick={() =>
+                          void run(async () => {
+                            await setServiceOncall(s.id, oncallChoice[s.id] ?? s.oncall_user_id ?? '')
+                          })
+                        }
+                      >
+                        Assign on-call
+                      </button>
                       <button data-testid="service-edit" type="button" onClick={() => startEdit(s)}>Editar</button>
                       <button data-testid="service-delete" type="button" onClick={() => void run(() => deleteService(s.id))}>
                         Borrar

@@ -33,6 +33,8 @@ export default defineConfig({
         PORT: apiPort,
         ADMIN_EMAIL: adminEmail,
         ADMIN_PASSWORD: adminPassword,
+        // Fast ticker so SLA escalation (UC-04) is observable within a test.
+        ESCALATION_INTERVAL: '1s',
       },
       // 401 counts as ready: the server is up and unauthenticated.
       url: `${apiUrl}/api/me`,

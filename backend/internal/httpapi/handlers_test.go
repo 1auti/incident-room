@@ -24,6 +24,26 @@ import (
 type fakeUsers struct {
 	mu   sync.Mutex
 	list []user.User
+	// oncallOf holds the ids of users that are on-call of some service (BR-19).
+	oncallOf map[string]bool
+}
+
+func (f *fakeUsers) ListByRole(_ context.Context, role user.Role) ([]user.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []user.User{}
+	for _, x := range f.list {
+		if x.Role == role {
+			out = append(out, x)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeUsers) IsOncallOfAnyService(_ context.Context, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.oncallOf[id], nil
 }
 
 func (f *fakeUsers) Create(_ context.Context, u user.User) (user.User, error) {
@@ -68,6 +88,16 @@ func (f *fakeUsers) UpdateRole(_ context.Context, id string, r user.Role) error 
 		}
 	}
 	return user.ErrNotFound
+}
+
+func (f *fakeUsers) UpdateRoleGuarded(ctx context.Context, id string, r user.Role) error {
+	f.mu.Lock()
+	blocked := r != user.RoleOncall && f.oncallOf[id]
+	f.mu.Unlock()
+	if blocked {
+		return user.ErrOncallAssigned
+	}
+	return f.UpdateRole(ctx, id, r)
 }
 
 func (f *fakeUsers) ExistsAdmin(context.Context) (bool, error) {
@@ -165,6 +195,18 @@ func (f *fakeServiceRepo) HasIncidents(_ context.Context, id string) (bool, erro
 
 func (f *fakeServiceRepo) HasRunbooks(context.Context, string) (bool, error) { return false, nil }
 
+func (f *fakeServiceRepo) SetOncall(_ context.Context, id, userID string, _ []incident.State, _ incident.TimelineEvent) (service.Service, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.list {
+		if f.list[i].ID == id {
+			f.list[i].OncallUserID = &userID
+			return f.list[i], nil
+		}
+	}
+	return service.Service{}, service.ErrNotFound
+}
+
 // fakeIncidentRepo resolves services from the fake catalog and records what is stored.
 type fakeIncidentRepo struct {
 	mu        sync.Mutex
@@ -218,6 +260,44 @@ func (f *fakeIncidentRepo) Create(_ context.Context, inc incident.Incident, evs 
 	return inc, out, nil
 }
 
+func (f *fakeIncidentRepo) Get(_ context.Context, id string) (incident.Incident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, inc := range f.incidents {
+		if inc.ID == id {
+			return inc, nil
+		}
+	}
+	return incident.Incident{}, incident.ErrNotFound
+}
+
+func (f *fakeIncidentRepo) ListPendingEscalation(context.Context, incident.State) ([]incident.Incident, error) {
+	return nil, nil
+}
+
+func (f *fakeIncidentRepo) Escalate(context.Context, incident.Incident, incident.TimelineEvent) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeIncidentRepo) UpdateState(_ context.Context, id string, from, to incident.State, ackAt *time.Time, ev incident.TimelineEvent) (incident.Incident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.incidents {
+		if f.incidents[i].ID != id {
+			continue
+		}
+		if f.incidents[i].State != from {
+			return incident.Incident{}, incident.ErrInvalidTransition
+		}
+		f.incidents[i].State = to
+		f.incidents[i].AcknowledgedAt = ackAt
+		ev.IncidentID = id
+		f.events = append(f.events, ev)
+		return f.incidents[i], nil
+	}
+	return incident.Incident{}, incident.ErrNotFound
+}
+
 var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 type env struct {
@@ -237,8 +317,8 @@ func newEnv(t *testing.T) *env {
 	us := user.NewService(users)
 	as := auth.NewService(users, sessions, time.Hour, time.Now)
 	incidents := &fakeIncidentRepo{services: services}
-	is := incident.NewService(incidents, func() time.Time { return fixedNow })
-	h := httpapi.New(us, as, service.NewManager(services), is, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	is := incident.NewService(incidents, func() time.Time { return fixedNow }, incident.DefaultSLA())
+	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents}
 }
 
@@ -724,5 +804,186 @@ func TestUC03_ListarIncidentesRequiereSesionYPasaFiltros(t *testing.T) {
 	w = e.do("GET", "/api/incidents?service_id=not-a-uuid", "", eng)
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid filter") {
 		t.Errorf("malformed service_id: status = %d (%s), want 400 invalid filter", w.Code, w.Body)
+	}
+}
+
+// userID returns the id the fake user store gave to the registered email.
+func userID(email string) string { return "id-" + email }
+
+func TestUC041_AsignarOncallPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t) // Oli (oli@x.com) is oncall
+	id := e.createService(t, admin, "Pagos")
+	path := "/api/services/" + id + "/oncall"
+
+	w := e.do("PUT", path, `{"user_id":"`+userID("oli@x.com")+`"}`, admin)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin status = %d, body %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["oncall_user_id"] != userID("oli@x.com") {
+		t.Errorf("body = %v, want the assigned on-call", got)
+	}
+
+	// BR-12: only the admin; denied calls leave the service as it was.
+	for name, c := range map[string]*http.Cookie{"ingeniero": eng, "oncall": oncall} {
+		if w := e.do("PUT", path, `{"user_id":"`+userID("ana@x.com")+`"}`, c); w.Code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want 403", name, w.Code)
+		}
+	}
+	if w := e.do("PUT", path, `{"user_id":"`+userID("ana@x.com")+`"}`, nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("no session status = %d, want 401", w.Code)
+	}
+	// BR-11: the target must be an existing user with role oncall.
+	for name, body := range map[string]string{
+		"ingeniero":     `{"user_id":"` + userID("ana@x.com") + `"}`,
+		"inexistente":   `{"user_id":"nope"}`,
+		"sin user_id":   `{}`,
+		"json invalido": `{`,
+	} {
+		if w := e.do("PUT", path, body, admin); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"error"`) {
+			t.Errorf("%s status = %d (%s), want 400 with JSON error", name, w.Code, w.Body)
+		}
+	}
+	if w := e.do("PUT", "/api/services/nope/oncall", `{"user_id":"`+userID("oli@x.com")+`"}`, admin); w.Code != http.StatusNotFound {
+		t.Errorf("unknown service status = %d, want 404", w.Code)
+	}
+	for _, s := range e.listServices(t, admin) {
+		if s["id"] == id && s["oncall_user_id"] != userID("oli@x.com") {
+			t.Errorf("service changed by a rejected assignment: %v", s)
+		}
+	}
+}
+
+// declareOn declares an incident on the service as the engineer and returns its id.
+func (e *env) declareOn(t *testing.T, c *http.Cookie, serviceID string) string {
+	t.Helper()
+	w := e.do("POST", "/api/incidents", `{"title":"x","service_id":"`+serviceID+`","impact":"menor"}`, c)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("declare status = %d, body %s", w.Code, w.Body)
+	}
+	var got struct {
+		Incident map[string]any `json:"incident"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	return got.Incident["id"].(string)
+}
+
+func TestUC04_DetalleDeIncidente(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	id := e.declareOn(t, eng, e.createService(t, admin, "Pagos"))
+
+	w := e.do("GET", "/api/incidents/"+id, "", eng)
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); w.Code != http.StatusOK || err != nil || got["id"] != id {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	if v, ok := got["acknowledged_at"]; !ok || v != nil {
+		t.Errorf("acknowledged_at = %v (present %v), want explicit null", v, ok)
+	}
+	if w := e.do("GET", "/api/incidents/nope", "", eng); w.Code != http.StatusNotFound {
+		t.Errorf("unknown id status = %d, want 404", w.Code)
+	}
+	if w := e.do("GET", "/api/incidents/"+id, "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("no session status = %d, want 401", w.Code)
+	}
+	// The literal route is not shadowed by the id route.
+	if w := e.do("GET", "/api/incidents/suggested-severity?service_id=x&impact=menor", "", eng); w.Code != http.StatusBadRequest {
+		t.Errorf("suggested-severity status = %d, want 400 from its own handler", w.Code)
+	}
+}
+
+func TestUC04_ReconocerPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+	svcID := e.createService(t, admin, "Pagos")
+	if w := e.do("PUT", "/api/services/"+svcID+"/oncall", `{"user_id":"`+userID("oli@x.com")+`"}`, admin); w.Code != http.StatusOK {
+		t.Fatalf("assign status = %d", w.Code)
+	}
+	otherOncall := func() *http.Cookie {
+		e.register(t, "Otro", "otro@x.com")
+		if err := e.users.UpdateRole(context.Background(), userID("otro@x.com"), user.RoleOncall); err != nil {
+			t.Fatal(err)
+		}
+		return e.loginCookie(t, "otro@x.com", "secret-pass")
+	}()
+	id := e.declareOn(t, eng, svcID)
+	path := "/api/incidents/" + id + "/transitions"
+	ack := `{"to":"reconocido"}`
+
+	// BR-11 / BR-08: ingeniero and a foreign oncall are forbidden; nothing changes.
+	for name, c := range map[string]*http.Cookie{"ingeniero": eng, "oncall ajeno": otherOncall} {
+		if w := e.do("POST", path, ack, c); w.Code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want 403", name, w.Code)
+		}
+	}
+	if w := e.do("POST", path, ack, nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("no session status = %d, want 401", w.Code)
+	}
+	if e.incidents.incidents[0].State != incident.StateDeclared || len(e.incidents.events) != 1 {
+		t.Fatalf("denied acknowledge changed the incident: %+v %d events", e.incidents.incidents[0], len(e.incidents.events))
+	}
+
+	for name, body := range map[string]string{"json invalido": `{`, "estado desconocido": `{"to":"dormido"}`, "sin to": `{}`} {
+		if w := e.do("POST", path, body, oncall); w.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", name, w.Code)
+		}
+	}
+	if w := e.do("POST", path, `{"to":"resuelto"}`, oncall); w.Code != http.StatusConflict {
+		t.Errorf("declarado to resuelto status = %d, want 409", w.Code)
+	}
+	if w := e.do("POST", "/api/incidents/nope/transitions", ack, oncall); w.Code != http.StatusNotFound {
+		t.Errorf("unknown id status = %d, want 404", w.Code)
+	}
+
+	w := e.do("POST", path, ack, oncall)
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if w.Code != http.StatusOK || got["state"] != "reconocido" || got["acknowledged_at"] != "2026-10-01T10:00:00Z" {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	if w := e.do("POST", path, ack, oncall); w.Code != http.StatusConflict {
+		t.Errorf("second acknowledge status = %d, want 409", w.Code)
+	}
+}
+
+func TestBR12_SoloAdminListaUsuariosPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+
+	w := e.do("GET", "/api/users?role=oncall", "", admin)
+	var got []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); w.Code != http.StatusOK || err != nil || len(got) != 1 || got[0]["name"] != "Oli" {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	if strings.Contains(strings.ToLower(w.Body.String()), "password") {
+		t.Errorf("body leaks password data: %s", w.Body)
+	}
+	for name, c := range map[string]*http.Cookie{"ingeniero": eng, "oncall": oncall} {
+		if w := e.do("GET", "/api/users?role=oncall", "", c); w.Code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want 403", name, w.Code)
+		}
+	}
+	if w := e.do("GET", "/api/users?role=oncall", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("no session status = %d, want 401", w.Code)
+	}
+	for _, q := range []string{"", "?role=root"} {
+		if w := e.do("GET", "/api/users"+q, "", admin); w.Code != http.StatusBadRequest {
+			t.Errorf("query %q status = %d, want 400", q, w.Code)
+		}
+	}
+}
+
+func TestBR19_NoQuitarOncallDeServicioPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, _, _ := e.cookies(t)
+	e.users.oncallOf = map[string]bool{userID("oli@x.com"): true}
+	if w := e.do("PATCH", "/api/users/"+userID("oli@x.com")+"/role", `{"role":"admin"}`, admin); w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", w.Code)
+	}
+	if got, _ := e.users.FindByID(context.Background(), userID("oli@x.com")); got.Role != user.RoleOncall {
+		t.Errorf("role = %s, want oncall kept", got.Role)
 	}
 }

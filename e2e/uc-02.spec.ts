@@ -152,14 +152,10 @@ test('UC-02.1 the suggestion follows service criticality and impact (BR-01)', as
 })
 
 test('UC-02.2 any allowed role declares accepting the suggested severity', async ({ page, playwright, baseURL }) => {
-  // IMPORTANT: this test cannot assert assigned_to == the service on-call. There is no way to
-  // assign an on-call today (that is UC-04), so a service with on-call cannot be prepared in e2e.
-  // That part of UC-02.2 is covered by TestBR11_DeclararAsignaOncallDelServicio and the SQL test
-  // TestPostgres_DeclararPersisteIncidenteYEventos.
-  // TODO(UC-04): UC-04 MUST add the e2e assert assigned_to == on-call of the service as soon as
-  // on-call assignment exists.
   const admin = await adminContext(playwright, baseURL)
   const svc = await createService(admin, 'critica') // caida_total => SEV1
+  const { user: oncallUser } = await registerUser(playwright, baseURL, admin, 'oncall')
+  expect((await admin.put(`/api/services/${svc.id}/oncall`, { data: { user_id: oncallUser.id } })).status()).toBe(200)
 
   // ingeniero through the UI.
   const engineer = await loginAsEngineerUi(page, playwright, baseURL, admin)
@@ -174,6 +170,7 @@ test('UC-02.2 any allowed role declares accepting the suggested severity', async
   expect(body.incident.state).toBe('declarado')
   expect(body.incident.severity).toBe(body.incident.suggested_severity)
   expect(body.incident.declared_by).toBe(engineer.id)
+  expect(body.incident.assigned_to).toBe(oncallUser.id)
   const declaredAt = Date.parse(body.incident.declared_at)
   expect(declaredAt).toBeGreaterThanOrEqual(before)
   expect(declaredAt).toBeLessThanOrEqual(after)
@@ -198,6 +195,7 @@ test('UC-02.2 any allowed role declares accepting the suggested severity', async
     expect(dto.incident.state).toBe('declarado')
     expect(dto.incident.severity).toBe(dto.incident.suggested_severity)
     expect(dto.incident.declared_by).toBe(user.id)
+    expect(dto.incident.assigned_to).toBe(oncallUser.id)
     const at = Date.parse(dto.incident.declared_at)
     expect(at).toBeGreaterThanOrEqual(t0)
     expect(at).toBeLessThanOrEqual(t1)
