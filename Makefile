@@ -1,10 +1,14 @@
 # Única fuente de verificación: la usan los hooks de Claude Code, el pre-commit y la CI.
-.PHONY: verify verify-backend verify-frontend verify-db e2e dev setup
+.PHONY: verify verify-backend lint-backend verify-frontend verify-db e2e dev setup
 
 verify: verify-backend verify-frontend
 
-verify-backend:
+verify-backend: lint-backend
 	cd backend && go build ./... && go vet ./... && go test ./...
+
+# golangci-lint v2 con el conjunto por defecto (ver backend/.golangci.yml).
+lint-backend:
+	cd backend && golangci-lint run ./...
 
 # El build de la plantilla de Vite incluye el typecheck (tsc -b).
 verify-frontend:
