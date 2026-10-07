@@ -37,10 +37,33 @@ func (s *Service) ChangeRole(ctx context.Context, actor User, targetID string, r
 	if role != RoleOncall && role != RoleAdmin {
 		return ErrForbidden
 	}
-	if err := s.repo.UpdateRole(ctx, targetID, role); err != nil {
+	// BR-19: an on-call of a service keeps the role until the service has another
+	// on-call. The repository checks and updates atomically, so a concurrent
+	// assignment cannot slip in between.
+	if err := s.repo.UpdateRoleGuarded(ctx, targetID, role); err != nil {
 		return fmt.Errorf("update role: %w", err)
 	}
 	return nil
+}
+
+// ListByRole lists the users with a role; only an admin may (BR-12). The result is never nil.
+func (s *Service) ListByRole(ctx context.Context, actor User, role Role) ([]User, error) {
+	if actor.Role != RoleAdmin {
+		return nil, ErrForbidden
+	}
+	switch role {
+	case RoleIngeniero, RoleOncall, RoleAdmin:
+	default:
+		return nil, fmt.Errorf("role must be ingeniero, oncall or admin: %w", ErrInvalidRole)
+	}
+	list, err := s.repo.ListByRole(ctx, role)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	if list == nil {
+		list = []User{}
+	}
+	return list, nil
 }
 
 // EnsureAdmin creates the first admin only when none exists (BR-19). It is idempotent.

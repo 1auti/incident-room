@@ -62,10 +62,81 @@ func (r *PostgresRepository) UpdateRole(ctx context.Context, id string, role Rol
 	return nil
 }
 
+// UpdateRoleGuarded changes the role in one transaction (BR-19). The user row is
+// locked FOR UPDATE first, so it serializes with SetOncall, which locks the same
+// row FOR SHARE: an assignment committed before the lock is seen by the
+// on-call check, and one that starts after waits and then sees the new role.
+func (r *PostgresRepository) UpdateRoleGuarded(ctx context.Context, id string, role Role) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var locked string
+	err = tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock user: %w", err)
+	}
+	if role != RoleOncall {
+		var assigned bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM services WHERE oncall_user_id = $1)`, id).Scan(&assigned); err != nil {
+			return fmt.Errorf("check on-call: %w", err)
+		}
+		if assigned {
+			return ErrOncallAssigned
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET role = $1 WHERE id = $2`, string(role), id); err != nil {
+		return fmt.Errorf("update role: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
 func (r *PostgresRepository) ExistsAdmin(ctx context.Context) (bool, error) {
 	var ok bool
 	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE role = 'admin')`).Scan(&ok); err != nil {
 		return false, fmt.Errorf("check admin: %w", err)
+	}
+	return ok, nil
+}
+
+func (r *PostgresRepository) ListByRole(ctx context.Context, role Role) ([]User, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+userColumns+` FROM users WHERE role = $1 ORDER BY lower(name), id`, string(role))
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	out := []User{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return out, nil
+}
+
+// IsOncallOfAnyService reports whether the user is the on-call of some service;
+// a malformed id is not on-call of anything.
+func (r *PostgresRepository) IsOncallOfAnyService(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM services WHERE oncall_user_id = $1)`, id).Scan(&ok)
+	if pgErrCode(err) == pgInvalidTextRepresen {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check on-call: %w", err)
 	}
 	return ok, nil
 }

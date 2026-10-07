@@ -27,6 +27,7 @@ const (
 type Users interface {
 	Register(ctx context.Context, name, email, password string) (user.User, error)
 	ChangeRole(ctx context.Context, actor user.User, targetID string, role user.Role) error
+	ListByRole(ctx context.Context, actor user.User, role user.Role) ([]user.User, error)
 }
 
 // Auth is the authentication behavior the handlers need.
@@ -41,18 +42,29 @@ type Services interface {
 	Create(ctx context.Context, actor user.User, name string, criticality incident.Criticality) (service.Service, error)
 	Update(ctx context.Context, actor user.User, id, name string, criticality incident.Criticality) (service.Service, error)
 	Delete(ctx context.Context, actor user.User, id string) error
+	SetOncall(ctx context.Context, actor user.User, id, userID string) (service.Service, error)
+}
+
+// Incidents is the incident behavior the handlers need.
+type Incidents interface {
+	Suggest(ctx context.Context, actor user.User, serviceID string, impact incident.Impact) (incident.Severity, error)
+	Declare(ctx context.Context, actor user.User, in incident.DeclareInput) (incident.Incident, []incident.TimelineEvent, error)
+	List(ctx context.Context, actor user.User, f incident.ListFilter) ([]incident.Incident, error)
+	Get(ctx context.Context, actor user.User, id string) (incident.Incident, error)
+	Transition(ctx context.Context, actor user.User, id string, to incident.State) (incident.Incident, error)
 }
 
 type handlers struct {
-	users    Users
-	auth     Auth
-	services Services
-	logger   *slog.Logger
+	users     Users
+	auth      Auth
+	services  Services
+	incidents Incidents
+	logger    *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, services Services, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn, services: services, logger: logger}
+func New(users Users, authn Auth, services Services, incidents Incidents, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
@@ -61,6 +73,16 @@ func New(users Users, authn Auth, services Services, logger *slog.Logger) http.H
 	mux.Handle("POST /api/services", requireAuth(requireAdmin(http.HandlerFunc(h.createService))))
 	mux.Handle("PUT /api/services/{id}", requireAuth(requireAdmin(http.HandlerFunc(h.updateService))))
 	mux.Handle("DELETE /api/services/{id}", requireAuth(requireAdmin(http.HandlerFunc(h.deleteService))))
+	mux.Handle("PUT /api/services/{id}/oncall", requireAuth(requireAdmin(http.HandlerFunc(h.setOncall))))
+	// Every role may declare (BR-10): the service enforces it, so no RequireRole here.
+	mux.Handle("GET /api/incidents/suggested-severity", requireAuth(http.HandlerFunc(h.suggestSeverity)))
+	mux.Handle("POST /api/incidents", requireAuth(http.HandlerFunc(h.declareIncident)))
+	// Every authenticated user sees every active incident (BR-10): no RequireRole.
+	mux.Handle("GET /api/incidents", requireAuth(http.HandlerFunc(h.listIncidents)))
+	mux.Handle("GET /api/incidents/{id}", requireAuth(http.HandlerFunc(h.getIncident)))
+	// The service decides who may transition (BR-08, BR-11): no RequireRole here.
+	mux.Handle("POST /api/incidents/{id}/transitions", requireAuth(http.HandlerFunc(h.transitionIncident)))
+	mux.Handle("GET /api/users", requireAuth(requireAdmin(http.HandlerFunc(h.listUsers))))
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
 	mux.Handle("GET /api/me", requireAuth(http.HandlerFunc(h.me)))
@@ -193,6 +215,119 @@ func (h *handlers) deleteService(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *handlers) setOncall(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		UserID string `json:"user_id"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	s, err := h.services.SetOncall(r.Context(), actor, r.PathValue("id"), in.UserID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
+}
+
+func (h *handlers) listUsers(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	list, err := h.users.ListByRole(r.Context(), actor, user.Role(r.URL.Query().Get("role")))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *handlers) getIncident(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	inc, err := h.incidents.Get(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inc)
+}
+
+func (h *handlers) transitionIncident(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		To incident.State `json:"to"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if !incident.ValidState(in.To) {
+		writeError(w, http.StatusBadRequest, "to must be declarado, reconocido, mitigando, resuelto or cerrado")
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	inc, err := h.incidents.Transition(r.Context(), actor, r.PathValue("id"), in.To)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inc)
+}
+
+func (h *handlers) suggestSeverity(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	q := r.URL.Query()
+	sev, err := h.incidents.Suggest(r.Context(), actor, q.Get("service_id"), incident.Impact(q.Get("impact")))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"suggested_severity": string(sev)})
+}
+
+// declareIncident ignores any declared_by in the body: the declarer is the
+// session user.
+func (h *handlers) declareIncident(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Title       string            `json:"title"`
+		Description string            `json:"description"`
+		ServiceID   string            `json:"service_id"`
+		Impact      incident.Impact   `json:"impact"`
+		Severity    incident.Severity `json:"severity"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	inc, events, err := h.incidents.Declare(r.Context(), actor, incident.DeclareInput{
+		Title: in.Title, Description: in.Description, ServiceID: in.ServiceID, Impact: in.Impact, Severity: in.Severity,
+	})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if events == nil {
+		events = []incident.TimelineEvent{}
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"incident": inc, "timeline": events})
+}
+
+// listIncidents takes at most one value per filter; empty means no filter.
+func (h *handlers) listIncidents(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	q := r.URL.Query()
+	list, err := h.incidents.List(r.Context(), actor, incident.ListFilter{
+		Severity:  incident.Severity(q.Get("severity")),
+		ServiceID: q.Get("service_id"),
+		State:     incident.State(q.Get("state")),
+	})
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if list == nil {
+		list = []incident.Incident{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
 func decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
@@ -213,8 +348,26 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "service has incidents or runbooks")
 	case errors.Is(err, service.ErrNotFound):
 		writeError(w, http.StatusNotFound, "service not found")
+	case errors.Is(err, service.ErrInvalidOncall):
+		writeError(w, http.StatusBadRequest, "invalid on-call: user_id must be an existing user with role oncall")
 	case errors.Is(err, service.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, incident.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid incident: title, service_id and impact (caida_total, degradacion or menor) are required and severity must be SEV1, SEV2 or SEV3")
+	case errors.Is(err, incident.ErrInvalidFilter):
+		writeError(w, http.StatusBadRequest, "invalid filter: severity must be SEV1, SEV2 or SEV3, state must be declarado, reconocido, mitigando, resuelto or cerrado and service_id must be a valid id")
+	case errors.Is(err, incident.ErrServiceNotFound):
+		writeError(w, http.StatusBadRequest, "invalid incident: service does not exist")
+	case errors.Is(err, incident.ErrNotFound):
+		writeError(w, http.StatusNotFound, "incident not found")
+	case errors.Is(err, incident.ErrInvalidTransition):
+		writeError(w, http.StatusConflict, "invalid state transition")
+	case errors.Is(err, incident.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, user.ErrOncallAssigned):
+		writeError(w, http.StatusConflict, "user is on-call of a service: assign another on-call first")
+	case errors.Is(err, user.ErrInvalidRole):
+		writeError(w, http.StatusBadRequest, "role must be ingeniero, oncall or admin")
 	case errors.Is(err, user.ErrEmailTaken):
 		writeError(w, http.StatusConflict, "email already registered")
 	case errors.Is(err, auth.ErrInvalidCredentials), errors.Is(err, auth.ErrUnauthenticated):

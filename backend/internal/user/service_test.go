@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,23 @@ import (
 type fakeRepo struct {
 	users map[string]user.User
 	next  int
+	// oncallOf holds the ids of users that are on-call of some service (BR-19).
+	oncallOf map[string]bool
+}
+
+func (f *fakeRepo) ListByRole(_ context.Context, role user.Role) ([]user.User, error) {
+	out := []user.User{}
+	for _, u := range f.users {
+		if u.Role == role {
+			out = append(out, u)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (f *fakeRepo) IsOncallOfAnyService(_ context.Context, id string) (bool, error) {
+	return f.oncallOf[id], nil
 }
 
 func newFakeRepo() *fakeRepo { return &fakeRepo{users: map[string]user.User{}} }
@@ -47,10 +65,18 @@ func (f *fakeRepo) FindByID(_ context.Context, id string) (user.User, error) {
 	return u, nil
 }
 
-func (f *fakeRepo) UpdateRole(_ context.Context, id string, role user.Role) error {
+// UpdateRole is the unguarded update: ChangeRole must never use it (BR-19 race).
+func (f *fakeRepo) UpdateRole(context.Context, string, user.Role) error {
+	return errors.New("unguarded UpdateRole used by ChangeRole")
+}
+
+func (f *fakeRepo) UpdateRoleGuarded(_ context.Context, id string, role user.Role) error {
 	u, ok := f.users[id]
 	if !ok {
 		return user.ErrNotFound
+	}
+	if role != user.RoleOncall && f.oncallOf[id] {
+		return user.ErrOncallAssigned
 	}
 	u.Role = role
 	f.users[id] = u
@@ -216,6 +242,69 @@ func TestBR12_SoloAdminCambiaRol(t *testing.T) {
 			got, _ := repo.FindByID(context.Background(), target.ID)
 			if got.Role != tt.wantRole {
 				t.Errorf("role = %q, want %q", got.Role, tt.wantRole)
+			}
+		})
+	}
+}
+
+func TestBR19_NoQuitarOncallAOncallDeServicio(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		role      user.Role
+		newRole   user.Role
+		isOncall  bool
+		wantErr   error
+		wantAfter user.Role
+	}{
+		{"oncall de un servicio no puede dejar de serlo", user.RoleOncall, user.RoleAdmin, true, user.ErrOncallAssigned, user.RoleOncall},
+		{"oncall sin servicios pasa a admin", user.RoleOncall, user.RoleAdmin, false, nil, user.RoleAdmin},
+		{"oncall de un servicio sigue oncall", user.RoleOncall, user.RoleOncall, true, nil, user.RoleOncall},
+		{"ingeniero se promueve a oncall", user.RoleIngeniero, user.RoleOncall, false, nil, user.RoleOncall},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			svc := user.NewService(repo)
+			target, err := svc.Register(context.Background(), "Ana", "ana@example.com", "pw")
+			if err != nil {
+				t.Fatal(err)
+			}
+			target.Role = tc.role
+			repo.users[target.ID] = target
+			repo.oncallOf = map[string]bool{target.ID: tc.isOncall}
+
+			err = svc.ChangeRole(context.Background(), user.User{ID: "actor", Role: user.RoleAdmin}, target.ID, tc.newRole)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if got, _ := repo.FindByID(context.Background(), target.ID); got.Role != tc.wantAfter {
+				t.Errorf("role = %q, want %q", got.Role, tc.wantAfter)
+			}
+		})
+	}
+}
+
+func TestBR12_SoloAdminListaUsuariosPorRol(t *testing.T) {
+	repo := newFakeRepo()
+	svc := user.NewService(repo)
+	repo.users["a"] = user.User{ID: "a", Name: "Ana", Role: user.RoleOncall}
+	repo.users["b"] = user.User{ID: "b", Name: "Bruno", Role: user.RoleIngeniero}
+	for _, tc := range []struct {
+		name    string
+		actor   user.Role
+		role    user.Role
+		wantErr error
+		wantLen int
+	}{
+		{"admin lista oncall", user.RoleAdmin, user.RoleOncall, nil, 1},
+		{"admin lista rol sin usuarios", user.RoleAdmin, user.RoleAdmin, nil, 0},
+		{"rol invalido", user.RoleAdmin, "root", user.ErrInvalidRole, 0},
+		{"ingeniero prohibido", user.RoleIngeniero, user.RoleOncall, user.ErrForbidden, 0},
+		{"oncall prohibido", user.RoleOncall, user.RoleOncall, user.ErrForbidden, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := svc.ListByRole(context.Background(), user.User{Role: tc.actor}, tc.role)
+			if !errors.Is(err, tc.wantErr) || len(got) != tc.wantLen || (tc.wantErr == nil && got == nil) {
+				t.Errorf("ListByRole = %v, %v; want %d users and %v", got, err, tc.wantLen, tc.wantErr)
 			}
 		})
 	}
