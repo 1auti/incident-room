@@ -1,14 +1,23 @@
-# Única fuente de verificación: la usan los hooks de Claude Code, el pre-commit y la CI.
-.PHONY: verify verify-backend verify-frontend verify-db e2e dev setup
+# Única fuente de verificación: la usan los hooks de Claude Code (Stop) y el pre-commit. Hoy no hay CI; la red de seguridad es el hook Stop (make verify completo).
+.PHONY: verify verify-backend lint-backend verify-changed verify-frontend verify-db e2e dev setup tools
 
 verify: verify-backend verify-frontend
 
-verify-backend:
+verify-backend: lint-backend
 	cd backend && go build ./... && go vet ./... && go test ./...
+
+# golangci-lint v2 con el conjunto por defecto (ver backend/.golangci.yml).
+lint-backend:
+	cd backend && golangci-lint run ./...
 
 # El build de la plantilla de Vite incluye el typecheck (tsc -b).
 verify-frontend:
 	cd frontend && npm run lint && npm run build
+
+# Bucle rápido local: tests Go solo de los paquetes cambiados contra main (y sus dependientes) y
+# `vitest --changed` en el frontend. No reemplaza a verify: el hook Stop sigue con `make verify` completo.
+verify-changed:
+	bash scripts/verify-changed.sh
 
 # Complemento de verify, no lo reemplaza: corre los tests de backend (incluidos los SQL)
 # contra un Postgres descartable. Requiere Docker; no forma parte de los hooks.
@@ -25,6 +34,11 @@ e2e:
 dev:
 	bash scripts/dev.sh
 
-# Activa los hooks de git versionados en el repo.
+# Activa los hooks de git versionados en el repo e instala/verifica las herramientas locales.
 setup:
 	git config core.hooksPath .githooks
+	$(MAKE) tools
+
+# Instala (go install) gofumpt, goimports y gopls; verifica ast-grep, typescript-language-server, etc.
+tools:
+	bash scripts/install-tools.sh

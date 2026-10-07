@@ -25,9 +25,15 @@ Cadena: `writer` (haiku, explora y escribe el informe) → `communicator` (haiku
 Ninguno decide reglas de negocio: las dudas vuelven al usuario. `/delegate` sigue usando el ejecutor opencode como alternativa al `builder`.
 
 ## Verificación
-- `make verify` es el único comando de verificación (build, vet, tests, lint, typecheck).
+- `make verify` es el único comando de verificación (build, vet, golangci-lint, tests, lint, typecheck).
 - `make verify-db` complementa a `verify` (no lo reemplaza): corre los tests de backend, SQL incluidos, contra un Postgres descartable. Los tests SQL leen `TEST_DATABASE_URL` (nunca `DATABASE_URL`, que es la de la API) y cada test crea y elimina su propio schema. Usalo cuando el cambio toque SQL; los agentes no piden credenciales.
 - Nunca uses `--no-verify` ni desactives, saltees o debilites tests o lint para que algo pase.
+
+## Lectura y búsqueda de código
+- Buscá primero con `rg -n <patrón>` y leé solo lo necesario: `Read` con `offset`/`limit`, no archivos enteros.
+- Definición y referencias de un símbolo: LSP (gopls para Go, typescript-language-server para TS), no `rg` a ciegas. El LSP se habilita con los plugins `gopls-lsp` y `typescript-lsp` (`enabledPlugins`; `make tools` intenta instalarlos) y necesita los binarios instalados.
+- Búsqueda estructural (llamadas, firmas, patrones de código): `ast-grep -p '<patrón>' -l go|ts|tsx`.
+- Comandos útiles: `make verify-changed` (tests solo de lo cambiado vs `main`); `make tools` instala/verifica estas herramientas.
 
 ## Herramientas MCP
 - context7: antes de usar la API de una librería (sobre todo LangChainGo), consultá su documentación. No asumas firmas.
