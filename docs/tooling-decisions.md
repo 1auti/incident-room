@@ -14,7 +14,7 @@ Rama: `chore/agent-code-tools`. Alcance: solo tooling; no toca código de negoci
 | Implementado | prettier (frontend) | Formato TS/TSX sin solaparse con oxlint. Ver "Prettier sobre Biome". |
 | Implementado | vitest (frontend) | Runner de tests con `--changed`; no hay equivalente en la librería estándar de JS. |
 | Implementado | golangci-lint v2 (`make lint-backend`) | Conjunto por defecto (errcheck, govet, ineffassign, staticcheck, unused); integrado en `verify-backend`. |
-| Implementado | Hooks acotados y `make verify-changed` | Feedback rápido por paquete/archivo; la verificación completa sigue en Stop y CI. |
+| Implementado | Hooks acotados y `make verify-changed` | Feedback rápido por paquete/archivo; la verificación completa sigue en el hook Stop (hoy no hay CI). |
 | Pospuesto | ctags / mapa de código | Con ~3.8k LOC `rg` + LSP alcanzan. Revisar si el repo crece. |
 | Pospuesto | semgrep | Sin reglas propias que justifiquen otra herramienta; ast-grep cubre la búsqueda. Revisar si el repo crece. |
 | Pospuesto | serena MCP | Duplica lo que ya dan los LSP directos. Revisar si el repo crece. |
@@ -33,8 +33,20 @@ staged. Es una decisión reversible.
 El pre-commit pasó de `make verify` completo a chequeos solo de lo staged: `gofumpt -l`, `go vet` y
 `go test` de los paquetes afectados (incluidos los que dependen de ellos), `oxlint` y `prettier --check`
 sobre los archivos staged y `tsc -b`. Los commits son más rápidos, a costa de no correr el lint completo de
-golangci-lint ni el build de Vite en cada commit. La red de seguridad se mantiene: el hook Stop de Claude
-Code y la CI siguen corriendo `make verify` completo, y `--no-verify` sigue prohibido.
+golangci-lint ni el build de Vite en cada commit. La red de seguridad actual es el hook Stop de Claude
+Code, que corre `make verify` completo; `--no-verify` sigue prohibido.
+
+Hoy no existe CI en el repo. Cuando se agregue, debe correr `make verify`, tener golangci-lint instalado y,
+si usa `make verify-changed`, hacer checkout con `fetch-depth: 0` (necesita el historial para comparar con
+`main`).
+
+Límites conocidos del pre-commit y de `verify-changed`:
+
+- Los chequeos corren sobre el working tree, no sobre el índice: con staging parcial (`git add -p`) se
+  valida contenido distinto del que se commitea.
+- La selección de paquetes afectados mira los archivos Go cambiados y sus dependientes de producción. No
+  detecta dependientes solo de tests ni entradas que no son Go (por ejemplo SQL embebido); un archivo Go
+  borrado o renombrado hace que se corran todos los paquetes del backend.
 
 ## Instalación local
 

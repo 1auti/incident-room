@@ -1,4 +1,4 @@
-# Única fuente de verificación: la usan los hooks de Claude Code, el pre-commit y la CI.
+# Única fuente de verificación: la usan los hooks de Claude Code (Stop) y el pre-commit. Hoy no hay CI; la red de seguridad es el hook Stop (make verify completo).
 .PHONY: verify verify-backend lint-backend verify-changed verify-frontend verify-db e2e dev setup tools
 
 verify: verify-backend verify-frontend
@@ -15,7 +15,7 @@ verify-frontend:
 	cd frontend && npm run lint && npm run build
 
 # Bucle rápido local: tests Go solo de los paquetes cambiados contra main (y sus dependientes) y
-# `vitest --changed` en el frontend. No reemplaza a verify: los hooks y la CI siguen con `make verify`.
+# `vitest --changed` en el frontend. No reemplaza a verify: el hook Stop sigue con `make verify` completo.
 verify-changed:
 	bash scripts/verify-changed.sh
 
