@@ -94,3 +94,13 @@ Una entrada por iteración relevante. Es la materia prima del README.
 - **Ajuste a las reglas de contexto:** `AGENTS.md`: sección "Lectura y búsqueda de código" y `make verify` incluye golangci-lint.
 
 ---
+
+### 2026-10-06 — Herramientas — Adopción del tooling (hook SessionStart, LSP, agentes)
+- **Herramienta / agente:** Claude Code (orquestador) y un escritor delegado (Sonnet)
+- **Prompt o comando:** pedido ad hoc de que el tooling de T1-T9 se use de verdad (tarea T10 de `odd/tasks/agent-code-tools.md`)
+- **Qué propuso el agente:** hook SessionStart que configura `core.hooksPath` y avisa en una línea si faltan herramientas (`install-tools.sh --check`); `enabledPlugins` para `gopls-lsp` y `typescript-lsp` más instalación opcional en `make tools`; `LSP` en los `tools:` de architect, reviewer, writer y builder con una línea de `rg -n` + `Read` acotado; sección "Adopción" en `docs/tooling-decisions.md`.
+- **Qué falló y qué capa lo detectó:** nada falló en la implementación; queda sin verificar que `enabledPlugins` instale el plugin en un clon nuevo.
+- **Corrección / decisión:** el paso `claude plugin install ... --scope project` queda en `make tools` como opcional (no corta el script si falla). Ahorro de tokens por LSP no probado: medir antes de afirmarlo.
+- **Ajuste a las reglas de contexto:** `AGENTS.md`: la guía de lectura menciona que el LSP viene de plugins y necesita los binarios.
+
+---

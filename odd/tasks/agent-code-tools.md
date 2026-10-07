@@ -19,6 +19,7 @@ Tooling only. No business code, no migrations, no UC specs touched.
 - [x] T7 frontend: prettier + vitest (justified: no stdlib equivalent), scripts and minimal config.
 - [x] T8 `docs/tooling-decisions.md` (implemented / deferred / discarded, with reasons) + `docs/bitacora.md` entry.
 - [x] T9 review follow-ups (findings 1-5, 7): deleted-Go-file handling (falls back to all packages; simulated staged deletion rc=0, full package set), base-ref validation (BASE_REF=nonexistent rc=1), docs say no CI exists (Stop hook is the net), `frontend/.vitest/` ignored, go tools pinned + install failures exit non-zero, task doc drift fixed. Commits: 78fc9d2, 69b8ac5, docs commit below.
+- [x] T10 adoption: SessionStart hook (`git config core.hooksPath .githooks` + quiet missing-tools check); LSP plugins `gopls-lsp`/`typescript-lsp` via `enabledPlugins` + one-time `claude plugin install` in `make tools`; add `LSP` to agent `tools:` allowlists and an rg/LSP-first line to agent prompts; document limits (trust dialog, per-dev plugin install, LSP diagnostics may add tokens: measure before claiming savings) in `docs/tooling-decisions.md` + AGENTS.md. Route: delegated writer. Evidence: session-start.sh silent+exit 0 with all tools, one line+exit 0 with reduced PATH; settings.json valid (jq); bash -n ok; make verify run at commit.
 
 ## Decisions
 Implemented: ripgrep guidance, gopls + TS LSP, ast-grep, gofumpt/goimports, prettier, vitest, golangci-lint, scoped hooks, verify-changed.

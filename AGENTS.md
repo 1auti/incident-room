@@ -30,7 +30,7 @@ Ninguno decide reglas de negocio: las dudas vuelven al usuario. `/delegate` sigu
 
 ## Lectura y búsqueda de código
 - Buscá primero con `rg -n <patrón>` y leé solo lo necesario: `Read` con `offset`/`limit`, no archivos enteros.
-- Definición y referencias de un símbolo: LSP (gopls para Go, typescript-language-server para TS), no `rg` a ciegas.
+- Definición y referencias de un símbolo: LSP (gopls para Go, typescript-language-server para TS), no `rg` a ciegas. El LSP se habilita con los plugins `gopls-lsp` y `typescript-lsp` (`enabledPlugins`; `make tools` intenta instalarlos) y necesita los binarios instalados.
 - Búsqueda estructural (llamadas, firmas, patrones de código): `ast-grep -p '<patrón>' -l go|ts|tsx`.
 - Comandos útiles: `make verify-changed` (tests solo de lo cambiado vs `main`); `make tools` instala/verifica estas herramientas.
 

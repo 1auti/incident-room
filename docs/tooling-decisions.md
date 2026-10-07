@@ -53,3 +53,29 @@ Límites conocidos del pre-commit y de `verify-changed`:
 `make setup` activa los hooks y ejecuta `make tools`: instala con `go install` gofumpt, goimports y gopls, y
 verifica que estén ast-grep, typescript-language-server, golangci-lint (v2), jq y rg, con la pista de
 instalación de cada uno.
+
+## Adopción
+
+Aplica solo, sin pasos manuales (una vez abierto Claude Code en el repo):
+
+- Hooks de `.claude/settings.json`: PostToolUse (formato y vet tras cada edición), Stop (`make verify`
+  completo) y SessionStart (`git config core.hooksPath .githooks` y un aviso de una línea si faltan
+  herramientas; no imprime nada si está todo).
+- `AGENTS.md` (guía de lectura y búsqueda) y los prompts de los agentes (`rg -n` + `Read` acotado, LSP
+  antes de leer archivos enteros).
+
+Requiere un paso único por desarrollador:
+
+- `make setup` (o `make tools`): instala/verifica las herramientas y, si existe el CLI `claude`, intenta
+  `claude plugin install gopls-lsp@claude-plugins-official --scope project` (y `typescript-lsp`). Si falla,
+  imprime la pista y no corta el script.
+- `enabledPlugins` versionado habilita los plugins LSP, pero no se verificó que instale el plugin en un
+  clon nuevo; por eso el paso de instalación queda como medida explícita.
+
+Límites honestos:
+
+- Los hooks del proyecto solo corren después de aceptar el diálogo de confianza del workspace.
+- Un commit desde una terminal común antes de abrir Claude Code por primera vez (o sin `make setup`) no
+  ejecuta el pre-commit, porque `core.hooksPath` todavía no está configurado.
+- El LSP empuja diagnósticos al contexto tras cada edición, así que puede AGREGAR tokens. El ahorro NO
+  está probado: medilo durante unas sesiones antes de afirmarlo.
