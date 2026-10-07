@@ -16,6 +16,7 @@ export interface Incident {
   declared_by: string
   assigned_to: string | null
   declared_at: string
+  acknowledged_at: string | null
   escalated_at: string | null
 }
 
@@ -69,4 +70,19 @@ export async function listIncidents(filter: IncidentFilter = {}): Promise<Incide
   }
   const qs = query.toString()
   return (await request<Incident[]>(`/api/incidents${qs === '' ? '' : `?${qs}`}`)) ?? []
+}
+
+export async function getIncident(id: string): Promise<Incident> {
+  const res = await request<Incident>(`/api/incidents/${encodeURIComponent(id)}`)
+  if (!res) throw new ApiError(500, 'empty response')
+  return res
+}
+
+export async function transitionIncident(id: string, to: State): Promise<Incident> {
+  const res = await request<Incident>(`/api/incidents/${encodeURIComponent(id)}/transitions`, {
+    method: 'POST',
+    body: { to },
+  })
+  if (!res) throw new ApiError(500, 'empty response')
+  return res
 }

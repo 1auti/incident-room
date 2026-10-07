@@ -20,6 +20,66 @@ type fakeRepo struct {
 	seeded    []incident.Incident
 	listed    int
 	lastQuery incident.ListQuery
+
+	// events collects what Escalate and UpdateState append (BR-09).
+	events []incident.TimelineEvent
+}
+
+func (f *fakeRepo) indexOf(id string) int {
+	for i := range f.seeded {
+		if f.seeded[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (f *fakeRepo) Get(_ context.Context, id string) (incident.Incident, error) {
+	i := f.indexOf(id)
+	if i < 0 {
+		return incident.Incident{}, incident.ErrNotFound
+	}
+	return f.seeded[i], nil
+}
+
+func (f *fakeRepo) ListPendingEscalation(_ context.Context, state incident.State) ([]incident.Incident, error) {
+	var out []incident.Incident
+	for _, inc := range f.seeded {
+		if inc.State == state && inc.EscalatedAt == nil {
+			out = append(out, inc)
+		}
+	}
+	return out, nil
+}
+
+// Escalate mirrors the conditional update of the real repository.
+func (f *fakeRepo) Escalate(_ context.Context, inc incident.Incident, ev incident.TimelineEvent) (bool, error) {
+	i := f.indexOf(inc.ID)
+	if i < 0 || f.seeded[i].State != incident.StateDeclared || f.seeded[i].EscalatedAt != nil || f.seeded[i].Severity != inc.Severity {
+		return false, nil
+	}
+	at := ev.OccurredAt
+	f.seeded[i].EscalatedAt = &at
+	ev.IncidentID = inc.ID
+	f.events = append(f.events, ev)
+	return true, nil
+}
+
+func (f *fakeRepo) UpdateState(_ context.Context, id string, from, to incident.State, ackAt *time.Time, ev incident.TimelineEvent) (incident.Incident, error) {
+	i := f.indexOf(id)
+	if i < 0 {
+		return incident.Incident{}, incident.ErrNotFound
+	}
+	if f.seeded[i].State != from {
+		return incident.Incident{}, incident.ErrInvalidTransition
+	}
+	f.seeded[i].State = to
+	if ackAt != nil {
+		f.seeded[i].AcknowledgedAt = ackAt
+	}
+	ev.IncidentID = id
+	f.events = append(f.events, ev)
+	return f.seeded[i], nil
 }
 
 func (f *fakeRepo) FindService(_ context.Context, id string) (incident.ServiceInfo, error) {
@@ -71,7 +131,7 @@ func newFake() *fakeRepo {
 }
 
 func newSvc(repo *fakeRepo) *incident.Service {
-	return incident.NewService(repo, func() time.Time { return fixedNow })
+	return incident.NewService(repo, func() time.Time { return fixedNow }, incident.DefaultSLA())
 }
 
 var engineer = user.User{ID: "u-eng", Role: user.RoleIngeniero}
@@ -124,7 +184,7 @@ func TestBR05_DeclaredAtUsaRelojInyectable(t *testing.T) {
 	svc := incident.NewService(repo, func() time.Time {
 		calls++
 		return fixedNow.In(local)
-	})
+	}, incident.DefaultSLA())
 	inc, evs, err := svc.Declare(context.Background(), engineer, incident.DeclareInput{
 		Title: "x", ServiceID: "critical", Impact: incident.ImpactTotalOutage, Severity: incident.SeveritySEV2,
 	})
@@ -430,5 +490,242 @@ func TestBR10_TodoAutenticadoVeTodosLosIncidentes(t *testing.T) {
 				t.Errorf("ids = %v, want the 4 active incidents", ids(got))
 			}
 		})
+	}
+}
+
+// clockedSvc returns a service whose clock is the returned pointer, so tests
+// can move time forward (BR-05).
+func clockedSvc(repo *fakeRepo, at time.Time) (*incident.Service, *time.Time) {
+	now := at
+	return incident.NewService(repo, func() time.Time { return now }, incident.DefaultSLA()), &now
+}
+
+// seedDeclared stores a declared, unacknowledged incident declared at fixedNow.
+func seedDeclared(repo *fakeRepo, id, service string, sev incident.Severity) {
+	repo.seeded = append(repo.seeded, incident.Incident{
+		ID: id, ServiceID: service, Severity: sev, State: incident.StateDeclared, DeclaredAt: fixedNow,
+	})
+}
+
+func escalationEvents(repo *fakeRepo) []incident.TimelineEvent {
+	var out []incident.TimelineEvent
+	for _, e := range repo.events {
+		if e.Type == incident.EventEscalation {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestBR03_PlazoSLAPorSeveridad(t *testing.T) {
+	sla := incident.DefaultSLA()
+	for _, tc := range []struct {
+		sev      incident.Severity
+		deadline time.Duration
+	}{
+		{incident.SeveritySEV1, 5 * time.Minute},
+		{incident.SeveritySEV2, 15 * time.Minute},
+		{incident.SeveritySEV3, 60 * time.Minute},
+	} {
+		t.Run(string(tc.sev), func(t *testing.T) {
+			if got := sla.Deadline(tc.sev); got != tc.deadline {
+				t.Fatalf("Deadline(%s) = %v, want %v", tc.sev, got, tc.deadline)
+			}
+			for _, step := range []struct {
+				name string
+				at   time.Duration
+				want int
+			}{
+				{"exact deadline does not escalate", tc.deadline, 0},
+				{"one second later escalates", tc.deadline + time.Second, 1},
+			} {
+				repo := newFake()
+				seedDeclared(repo, "i1", "important", tc.sev)
+				svc, now := clockedSvc(repo, fixedNow)
+				*now = fixedNow.Add(step.at)
+				n, err := svc.EscalateOverdue(context.Background())
+				if err != nil || n != step.want || len(escalationEvents(repo)) != step.want {
+					t.Errorf("%s: escalated = %d (%v), events = %d, want %d", step.name, n, err, len(escalationEvents(repo)), step.want)
+				}
+			}
+		})
+	}
+}
+
+func TestBR03_PlazoUsaSeveridadVigente(t *testing.T) {
+	// SEV3 raised to SEV1 is evaluated with the SEV1 deadline measured from declared_at.
+	repo := newFake()
+	seedDeclared(repo, "i1", "important", incident.SeveritySEV1) // already raised to SEV1
+	svc, now := clockedSvc(repo, fixedNow.Add(7*time.Minute))
+	if n, err := svc.EscalateOverdue(context.Background()); err != nil || n != 1 {
+		t.Fatalf("SEV1 at 10:07: escalated = %d, %v; want 1", n, err)
+	}
+	_ = now
+
+	for _, tc := range []struct {
+		name string
+		at   time.Duration
+		want int
+	}{
+		{"SEV3 at 10:59:59", 59*time.Minute + 59*time.Second, 0},
+		{"SEV3 at 11:00:01", 60*time.Minute + time.Second, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFake()
+			seedDeclared(repo, "i1", "important", incident.SeveritySEV3)
+			svc, _ := clockedSvc(repo, fixedNow.Add(tc.at))
+			if n, err := svc.EscalateOverdue(context.Background()); err != nil || n != tc.want {
+				t.Errorf("escalated = %d, %v; want %d", n, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBR04_EscalaUnaSolaVezAlVencer(t *testing.T) {
+	repo := newFake()
+	seedDeclared(repo, "i1", "important", incident.SeveritySEV2)
+	svc, now := clockedSvc(repo, fixedNow.Add(15*time.Minute))
+	if n, err := svc.EscalateOverdue(context.Background()); err != nil || n != 0 {
+		t.Fatalf("at 10:15:00 escalated = %d, %v; want 0", n, err)
+	}
+	if repo.seeded[0].EscalatedAt != nil {
+		t.Fatalf("escalated_at set before the deadline")
+	}
+
+	*now = fixedNow.Add(15*time.Minute + time.Second)
+	if n, err := svc.EscalateOverdue(context.Background()); err != nil || n != 1 {
+		t.Fatalf("at 10:15:01 escalated = %d, %v; want 1", n, err)
+	}
+	if got := repo.seeded[0].EscalatedAt; got == nil || !got.Equal(*now) {
+		t.Errorf("escalated_at = %v, want %v", got, *now)
+	}
+	evs := escalationEvents(repo)
+	if len(evs) != 1 || evs[0].AuthorID != nil || evs[0].IncidentID != "i1" || !evs[0].OccurredAt.Equal(*now) || evs[0].Data == nil {
+		t.Fatalf("events = %+v, want exactly one escalado with nil author", repo.events)
+	}
+
+	*now = now.Add(time.Hour)
+	if n, err := svc.EscalateOverdue(context.Background()); err != nil || n != 0 {
+		t.Errorf("second evaluation escalated = %d, %v; want 0", n, err)
+	}
+	if len(escalationEvents(repo)) != 1 {
+		t.Errorf("second evaluation added an event: %+v", repo.events)
+	}
+}
+
+func TestBR04_ServicioSinOncallEscala(t *testing.T) {
+	repo := newFake()
+	seedDeclared(repo, "i1", "critical", incident.SeveritySEV2) // "critical" has no on-call
+	svc, _ := clockedSvc(repo, fixedNow.Add(15*time.Minute+time.Second))
+	if n, err := svc.EscalateOverdue(context.Background()); err != nil || n != 1 {
+		t.Fatalf("escalated = %d, %v; want 1", n, err)
+	}
+	if repo.seeded[0].EscalatedAt == nil || repo.seeded[0].AssignedTo != nil {
+		t.Errorf("incident = %+v, want escalated and still unassigned", repo.seeded[0])
+	}
+	if len(escalationEvents(repo)) != 1 {
+		t.Errorf("events = %+v", repo.events)
+	}
+}
+
+func TestBR04_ReconocidoATiempoNoEscala(t *testing.T) {
+	repo := newFake()
+	seedDeclared(repo, "i1", "important", incident.SeveritySEV2)
+	svc, now := clockedSvc(repo, fixedNow.Add(14*time.Minute+59*time.Second))
+	oncall := user.User{ID: "oncall-1", Role: user.RoleOncall}
+	got, err := svc.Transition(context.Background(), oncall, "i1", incident.StateAcknowledged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != incident.StateAcknowledged || got.AcknowledgedAt == nil || !got.AcknowledgedAt.Equal(*now) {
+		t.Errorf("incident = %+v, want reconocido with acknowledged_at = 10:14:59", got)
+	}
+	if len(repo.events) != 1 || repo.events[0].Type != incident.EventStateChange || repo.events[0].AuthorID == nil ||
+		*repo.events[0].AuthorID != "oncall-1" || repo.events[0].Data["from"] != "declarado" || repo.events[0].Data["to"] != "reconocido" ||
+		!repo.events[0].OccurredAt.Equal(*now) {
+		t.Errorf("events = %+v, want one cambio_estado declarado->reconocido", repo.events)
+	}
+
+	*now = fixedNow.Add(15*time.Minute + time.Second)
+	if n, err := svc.EscalateOverdue(context.Background()); err != nil || n != 0 {
+		t.Errorf("escalated = %d, %v; want 0", n, err)
+	}
+	if len(escalationEvents(repo)) != 0 || repo.seeded[0].EscalatedAt != nil {
+		t.Errorf("acknowledged incident was escalated: %+v", repo.events)
+	}
+}
+
+func TestBR11_OncallAjenoNoReconoce(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		actor   user.User
+		wantErr error
+	}{
+		{"on-call del servicio", user.User{ID: "oncall-1", Role: user.RoleOncall}, nil},
+		{"oncall ajeno", user.User{ID: "oncall-2", Role: user.RoleOncall}, incident.ErrForbidden},
+		{"ingeniero", user.User{ID: "u-eng", Role: user.RoleIngeniero}, incident.ErrForbidden},
+		{"admin", user.User{ID: "u-admin", Role: user.RoleAdmin}, nil},
+		{"rol desconocido", user.User{ID: "x", Role: "visitante"}, incident.ErrForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFake()
+			seedDeclared(repo, "i1", "important", incident.SeveritySEV2)
+			svc, _ := clockedSvc(repo, fixedNow.Add(time.Minute))
+			_, err := svc.Transition(context.Background(), tc.actor, "i1", incident.StateAcknowledged)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			wantState, wantEvents := incident.StateDeclared, 0
+			if tc.wantErr == nil {
+				wantState, wantEvents = incident.StateAcknowledged, 1
+			}
+			if repo.seeded[0].State != wantState || len(repo.events) != wantEvents {
+				t.Errorf("state = %s, events = %d; want %s, %d", repo.seeded[0].State, len(repo.events), wantState, wantEvents)
+			}
+		})
+	}
+}
+
+func TestBR08_TransicionesInvalidasSeRechazan(t *testing.T) {
+	admin := user.User{ID: "u-admin", Role: user.RoleAdmin}
+	for _, tc := range []struct {
+		name    string
+		state   incident.State
+		to      incident.State
+		id      string
+		wantErr error
+	}{
+		{"salto declarado a resuelto", incident.StateDeclared, incident.StateResolved, "i1", incident.ErrInvalidTransition},
+		{"ya reconocido", incident.StateAcknowledged, incident.StateAcknowledged, "i1", incident.ErrInvalidTransition},
+		{"retroceso", incident.StateAcknowledged, incident.StateDeclared, "i1", incident.ErrInvalidTransition},
+		{"inexistente", incident.StateDeclared, incident.StateAcknowledged, "nope", incident.ErrNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFake()
+			seedDeclared(repo, "i1", "important", incident.SeveritySEV2)
+			repo.seeded[0].State = tc.state
+			svc, _ := clockedSvc(repo, fixedNow)
+			if _, err := svc.Transition(context.Background(), admin, tc.id, tc.to); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if repo.seeded[0].State != tc.state || len(repo.events) != 0 || repo.seeded[0].AcknowledgedAt != nil {
+				t.Errorf("rejected transition changed the incident: %+v events %+v", repo.seeded[0], repo.events)
+			}
+		})
+	}
+}
+
+func TestUC04_GetRequiereRolValido(t *testing.T) {
+	repo := newFake()
+	seedDeclared(repo, "i1", "important", incident.SeveritySEV2)
+	svc := newSvc(repo)
+	if got, err := svc.Get(context.Background(), engineer, "i1"); err != nil || got.ID != "i1" {
+		t.Errorf("Get = %+v, %v", got, err)
+	}
+	if _, err := svc.Get(context.Background(), user.User{Role: "visitante"}, "i1"); !errors.Is(err, incident.ErrForbidden) {
+		t.Errorf("unknown role err = %v, want ErrForbidden", err)
+	}
+	if _, err := svc.Get(context.Background(), engineer, "nope"); !errors.Is(err, incident.ErrNotFound) {
+		t.Errorf("missing err = %v, want ErrNotFound", err)
 	}
 }

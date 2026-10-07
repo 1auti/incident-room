@@ -114,6 +114,87 @@ func (r *PostgresRepository) HasRunbooks(context.Context, string) (bool, error) 
 	return false, nil
 }
 
+// SetOncall changes the on-call and reassigns the active incidents in one
+// transaction. The service row is locked, so two concurrent changes serialize.
+// Event rows are only ever inserted (BR-09).
+func (r *PostgresRepository) SetOncall(ctx context.Context, id, userID string, active []incident.State, ev incident.TimelineEvent) (Service, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return Service{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	current, err := scanService(tx.QueryRow(ctx, `SELECT `+serviceColumns+` FROM services WHERE id = $1 FOR UPDATE`, id))
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+		return Service{}, ErrNotFound
+	}
+	if err != nil {
+		return Service{}, fmt.Errorf("lock service: %w", err)
+	}
+	if current.OncallUserID != nil && *current.OncallUserID == userID {
+		return current, nil
+	}
+
+	updated, err := scanService(tx.QueryRow(ctx,
+		`UPDATE services SET oncall_user_id = $1 WHERE id = $2 RETURNING `+serviceColumns, userID, id))
+	if pgErrCode(err) == pgForeignKeyViolation || pgErrCode(err) == pgInvalidTextRepresen {
+		return Service{}, ErrInvalidOncall
+	}
+	if err != nil {
+		return Service{}, fmt.Errorf("update on-call: %w", err)
+	}
+
+	states := make([]string, len(active))
+	for i, st := range active {
+		states[i] = string(st)
+	}
+	rows, err := tx.Query(ctx, `
+		UPDATE incidents i SET assigned_to = $1
+		FROM (SELECT id, assigned_to FROM incidents WHERE service_id = $2 AND state = ANY($3) FOR UPDATE) old
+		WHERE i.id = old.id
+		RETURNING i.id, old.assigned_to`, userID, id, states)
+	if err != nil {
+		return Service{}, fmt.Errorf("reassign incidents: %w", err)
+	}
+	type moved struct {
+		id   string
+		from *string
+	}
+	var movedList []moved
+	for rows.Next() {
+		var m moved
+		if err := rows.Scan(&m.id, &m.from); err != nil {
+			rows.Close()
+			return Service{}, fmt.Errorf("scan reassigned incident: %w", err)
+		}
+		movedList = append(movedList, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return Service{}, fmt.Errorf("reassign incidents: %w", err)
+	}
+
+	for _, m := range movedList {
+		data := map[string]string{"from": ""}
+		for k, v := range ev.Data {
+			data[k] = v
+		}
+		if m.from != nil {
+			data["from"] = *m.from
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO timeline_events (incident_id, type, author_id, body, data, occurred_at)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			m.id, string(ev.Type), ev.AuthorID, ev.Body, data, ev.OccurredAt); err != nil {
+			return Service{}, fmt.Errorf("insert timeline event: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Service{}, fmt.Errorf("commit: %w", err)
+	}
+	return updated, nil
+}
+
 func scanService(row pgx.Row) (Service, error) {
 	var s Service
 	var crit string

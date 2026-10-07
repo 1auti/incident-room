@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"incident-room-backend/internal/dbtest"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/service"
@@ -202,5 +204,149 @@ func TestPostgres_ListarActivosConFiltros(t *testing.T) {
 
 	if _, err := repo.List(c, incident.ListQuery{States: active, ServiceID: "not-a-uuid"}); !errors.Is(err, incident.ErrInvalidFilter) {
 		t.Errorf("malformed service id err = %v, want ErrInvalidFilter", err)
+	}
+}
+
+// seededDB holds the ids of the user and service the SQL tests share.
+type seededDB struct {
+	userID, serviceID string
+}
+
+func seedBase(t *testing.T, pool *pgxpool.Pool) seededDB {
+	t.Helper()
+	c := context.Background()
+	var s seededDB
+	if err := pool.QueryRow(c, `INSERT INTO users (name, email, password_hash, role) VALUES ('Ana', 'ana@x.com', 'h', 'oncall') RETURNING id`).Scan(&s.userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(c, `INSERT INTO services (name, criticality) VALUES ('Pagos', 'importante') RETURNING id`).Scan(&s.serviceID); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func insertIncident(t *testing.T, pool *pgxpool.Pool, s seededDB, state incident.State, sev incident.Severity, declaredAt time.Time) string {
+	t.Helper()
+	var id string
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO incidents (title, service_id, impact, suggested_severity, severity, state, declared_by, declared_at)
+		VALUES ('x', $1, 'menor', $2, $2, $3, $4, $5) RETURNING id`,
+		s.serviceID, string(sev), string(state), s.userID, declaredAt).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func countEvents(t *testing.T, pool *pgxpool.Pool, incidentID string, typ incident.EventType) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM timeline_events WHERE incident_id = $1 AND type = $2`, incidentID, string(typ)).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestPostgres_TransicionFijaAcknowledgedAtYEvento(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := incident.NewPostgresRepository(pool)
+	s := seedBase(t, pool)
+	declared := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	id := insertIncident(t, pool, s, incident.StateDeclared, incident.SeveritySEV2, declared)
+
+	got, err := repo.Get(c, id)
+	if err != nil || got.State != incident.StateDeclared || got.AcknowledgedAt != nil || !got.DeclaredAt.Equal(declared) {
+		t.Fatalf("Get = %+v, %v", got, err)
+	}
+	for _, bad := range []string{"nope", "00000000-0000-0000-0000-000000000000"} {
+		if _, err := repo.Get(c, bad); !errors.Is(err, incident.ErrNotFound) {
+			t.Errorf("Get %q err = %v, want ErrNotFound", bad, err)
+		}
+	}
+
+	at := declared.Add(14*time.Minute + 59*time.Second)
+	ev := incident.TimelineEvent{Type: incident.EventStateChange, AuthorID: &s.userID, Data: map[string]string{"from": "declarado", "to": "reconocido"}, OccurredAt: at}
+	updated, err := repo.UpdateState(c, id, incident.StateDeclared, incident.StateAcknowledged, &at, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != incident.StateAcknowledged || updated.AcknowledgedAt == nil || !updated.AcknowledgedAt.Equal(at) || updated.AcknowledgedAt.Location() != time.UTC {
+		t.Errorf("updated = %+v", updated)
+	}
+	var from, to string
+	var author *string
+	if err := pool.QueryRow(c, `SELECT data->>'from', data->>'to', author_id FROM timeline_events WHERE incident_id = $1 AND type = 'cambio_estado'`, id).
+		Scan(&from, &to, &author); err != nil || from != "declarado" || to != "reconocido" || author == nil || *author != s.userID {
+		t.Errorf("cambio_estado row = %s %s %v, %v", from, to, author, err)
+	}
+
+	// The incident is no longer declarado: the conditional update touches nothing.
+	if _, err := repo.UpdateState(c, id, incident.StateDeclared, incident.StateAcknowledged, &at, ev); !errors.Is(err, incident.ErrInvalidTransition) {
+		t.Errorf("second UpdateState err = %v, want ErrInvalidTransition", err)
+	}
+	if n := countEvents(t, pool, id, incident.EventStateChange); n != 1 {
+		t.Errorf("cambio_estado events = %d, want 1 (rolled back)", n)
+	}
+	if _, err := repo.UpdateState(c, "00000000-0000-0000-0000-000000000000", incident.StateDeclared, incident.StateAcknowledged, &at, ev); !errors.Is(err, incident.ErrNotFound) {
+		t.Errorf("unknown id err = %v, want ErrNotFound", err)
+	}
+	if _, err := repo.UpdateState(c, "nope", incident.StateDeclared, incident.StateAcknowledged, &at, ev); !errors.Is(err, incident.ErrNotFound) {
+		t.Errorf("malformed id err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPostgres_EscalarEsCondicionalYUnico(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := incident.NewPostgresRepository(pool)
+	s := seedBase(t, pool)
+	declared := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	overdue := insertIncident(t, pool, s, incident.StateDeclared, incident.SeveritySEV2, declared)
+	acked := insertIncident(t, pool, s, incident.StateAcknowledged, incident.SeveritySEV2, declared)
+
+	pending, err := repo.ListPendingEscalation(c, incident.StateDeclared)
+	if err != nil || len(pending) != 1 || pending[0].ID != overdue {
+		t.Fatalf("pending = %+v, %v; want only the declarado one", pending, err)
+	}
+
+	at := declared.Add(15*time.Minute + time.Second)
+	ev := incident.TimelineEvent{Type: incident.EventEscalation, Data: map[string]string{}, OccurredAt: at}
+
+	// A stale view of the severity (it was raised meanwhile) does not escalate.
+	stale := pending[0]
+	stale.Severity = incident.SeveritySEV3
+	if ok, err := repo.Escalate(c, stale, ev); err != nil || ok {
+		t.Fatalf("stale severity Escalate = %v, %v; want false", ok, err)
+	}
+	if n := countEvents(t, pool, overdue, incident.EventEscalation); n != 0 {
+		t.Fatalf("events after stale escalate = %d, want 0", n)
+	}
+
+	if ok, err := repo.Escalate(c, pending[0], ev); err != nil || !ok {
+		t.Fatalf("Escalate = %v, %v; want true", ok, err)
+	}
+	// Second and concurrent-looking attempts add nothing.
+	if ok, err := repo.Escalate(c, pending[0], ev); err != nil || ok {
+		t.Fatalf("second Escalate = %v, %v; want false", ok, err)
+	}
+	// Not declarado: never escalates.
+	if ok, err := repo.Escalate(c, incident.Incident{ID: acked, Severity: incident.SeveritySEV2}, ev); err != nil || ok {
+		t.Fatalf("Escalate on reconocido = %v, %v; want false", ok, err)
+	}
+
+	if n := countEvents(t, pool, overdue, incident.EventEscalation); n != 1 {
+		t.Errorf("escalado events = %d, want exactly 1", n)
+	}
+	if n := countEvents(t, pool, acked, incident.EventEscalation); n != 0 {
+		t.Errorf("escalado events on reconocido = %d, want 0", n)
+	}
+	var author *string
+	var escalatedAt time.Time
+	if err := pool.QueryRow(c, `SELECT e.author_id, i.escalated_at FROM timeline_events e JOIN incidents i ON i.id = e.incident_id WHERE e.incident_id = $1 AND e.type = 'escalado'`, overdue).
+		Scan(&author, &escalatedAt); err != nil || author != nil || !escalatedAt.Equal(at) {
+		t.Errorf("escalado row author = %v escalated_at = %v, %v; want NULL and %v", author, escalatedAt, err, at)
+	}
+	if pending, err := repo.ListPendingEscalation(c, incident.StateDeclared); err != nil || len(pending) != 0 {
+		t.Errorf("pending after escalation = %+v, %v; want none", pending, err)
 	}
 }

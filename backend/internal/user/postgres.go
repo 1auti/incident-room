@@ -70,6 +70,40 @@ func (r *PostgresRepository) ExistsAdmin(ctx context.Context) (bool, error) {
 	return ok, nil
 }
 
+func (r *PostgresRepository) ListByRole(ctx context.Context, role Role) ([]User, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+userColumns+` FROM users WHERE role = $1 ORDER BY lower(name), id`, string(role))
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	out := []User{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return out, nil
+}
+
+// IsOncallOfAnyService reports whether the user is the on-call of some service;
+// a malformed id is not on-call of anything.
+func (r *PostgresRepository) IsOncallOfAnyService(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM services WHERE oncall_user_id = $1)`, id).Scan(&ok)
+	if pgErrCode(err) == pgInvalidTextRepresen {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check on-call: %w", err)
+	}
+	return ok, nil
+}
+
 func (r *PostgresRepository) find(ctx context.Context, where string, arg any) (User, error) {
 	u, err := scanUser(r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE `+where, arg))
 	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {

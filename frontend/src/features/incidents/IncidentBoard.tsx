@@ -16,7 +16,11 @@ interface Loaded {
   error: string | null
 }
 
-export function IncidentBoard() {
+interface Props {
+  onOpen: (id: string) => void
+}
+
+export function IncidentBoard({ onOpen }: Props) {
   const [services, setServices] = useState<Service[]>([])
   const [severity, setSeverity] = useState<Severity | ''>('')
   const [serviceId, setServiceId] = useState('')
@@ -115,6 +119,10 @@ export function IncidentBoard() {
               <span data-testid="board-incident-service">{serviceName(inc.service_id)}</span>
               {' '}
               {inc.escalated_at !== null && <strong data-testid="board-incident-escalated">Escalado</strong>}
+              {' '}
+              <button type="button" data-testid="board-incident-open" onClick={() => onOpen(inc.id)}>
+                Ver detalle
+              </button>
             </li>
           ))}
         </ul>

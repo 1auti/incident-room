@@ -26,7 +26,10 @@ type EventType string
 
 const (
 	EventDeclaration    EventType = "declaracion"
+	EventStateChange    EventType = "cambio_estado"
 	EventSeverityChange EventType = "cambio_severidad"
+	EventAssignment     EventType = "asignacion"
+	EventEscalation     EventType = "escalado"
 )
 
 // Domain errors translated to HTTP by handlers.
@@ -35,7 +38,35 @@ var (
 	ErrServiceNotFound = errors.New("service not found")
 	ErrForbidden       = errors.New("forbidden")
 	ErrInvalidFilter   = errors.New("invalid incident filter")
+	ErrNotFound        = errors.New("incident not found")
+	// ErrInvalidTransition: the state change is not in the transition table or
+	// the incident is no longer in the expected state (BR-08).
+	ErrInvalidTransition = errors.New("invalid state transition")
 )
+
+// SLA holds the acknowledgement deadline per severity, measured from
+// declared_at (BR-03).
+type SLA struct {
+	SEV1, SEV2, SEV3 time.Duration
+}
+
+// DefaultSLA returns the default deadlines: SEV1 5 min, SEV2 15 min, SEV3 60 min.
+func DefaultSLA() SLA {
+	return SLA{SEV1: 5 * time.Minute, SEV2: 15 * time.Minute, SEV3: 60 * time.Minute}
+}
+
+// Deadline returns the acknowledgement deadline for a severity; zero if unknown.
+func (s SLA) Deadline(sev Severity) time.Duration {
+	switch sev {
+	case SeveritySEV1:
+		return s.SEV1
+	case SeveritySEV2:
+		return s.SEV2
+	case SeveritySEV3:
+		return s.SEV3
+	}
+	return 0
+}
 
 // Incident is a declared incident.
 type Incident struct {
@@ -50,6 +81,8 @@ type Incident struct {
 	DeclaredBy        string    `json:"declared_by"`
 	AssignedTo        *string   `json:"assigned_to"`
 	DeclaredAt        time.Time `json:"declared_at"`
+	// AcknowledgedAt is set when the incident moves to reconocido; nil otherwise.
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
 	// EscalatedAt is set when the incident was escalated by SLA (BR-04); nil otherwise.
 	EscalatedAt *time.Time `json:"escalated_at"`
 }
@@ -88,9 +121,21 @@ type ServiceInfo struct {
 // List returns the incidents matching every filter of q, newest declared_at
 // first (ties by id); never nil-significant. A malformed ServiceID yields
 // ErrInvalidFilter; a well-formed unknown one yields an empty list.
+// Get returns ErrNotFound when no incident matches (including a malformed id).
+// ListPendingEscalation returns the incidents in the given state that were never
+// escalated. Escalate sets escalated_at to ev.OccurredAt and stores ev in one
+// transaction, only if the incident is still declarado, not escalated and has the
+// severity of inc; it reports whether it escalated. UpdateState moves an incident
+// from one state to another, setting acknowledged_at when ackAt is not nil, and
+// stores ev in the same transaction; it returns ErrInvalidTransition when the
+// incident is no longer in state from, and ErrNotFound when it does not exist.
 // There is deliberately no way to update or delete events (BR-09).
 type Repository interface {
 	List(ctx context.Context, q ListQuery) ([]Incident, error)
+	Get(ctx context.Context, id string) (Incident, error)
+	ListPendingEscalation(ctx context.Context, state State) ([]Incident, error)
+	Escalate(ctx context.Context, inc Incident, ev TimelineEvent) (bool, error)
+	UpdateState(ctx context.Context, id string, from, to State, ackAt *time.Time, ev TimelineEvent) (Incident, error)
 	FindService(ctx context.Context, id string) (ServiceInfo, error)
 	Create(ctx context.Context, inc Incident, events []TimelineEvent) (Incident, []TimelineEvent, error)
 }

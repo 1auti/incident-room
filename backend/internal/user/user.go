@@ -24,6 +24,10 @@ var (
 	// ErrAdminEmailTaken: the configured admin email belongs to an existing
 	// non-admin user. Existing users are never promoted (BR-19).
 	ErrAdminEmailTaken = errors.New("admin email already belongs to a non-admin user")
+	// ErrOncallAssigned: the user is on-call of a service and keeps the oncall role
+	// until another on-call is assigned (BR-19).
+	ErrOncallAssigned = errors.New("user is on-call of a service")
+	ErrInvalidRole    = errors.New("invalid role")
 )
 
 // User is an account. The password hash is never serialized.
@@ -45,4 +49,8 @@ type Repository interface {
 	FindByID(ctx context.Context, id string) (User, error)
 	UpdateRole(ctx context.Context, id string, role Role) error
 	ExistsAdmin(ctx context.Context) (bool, error)
+	// ListByRole returns the users with the role, ordered by name; never nil.
+	ListByRole(ctx context.Context, role Role) ([]User, error)
+	// IsOncallOfAnyService reports whether the user is oncall_user_id of some service.
+	IsOncallOfAnyService(ctx context.Context, id string) (bool, error)
 }

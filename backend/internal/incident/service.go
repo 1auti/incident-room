@@ -2,6 +2,7 @@ package incident
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -15,11 +16,12 @@ import (
 type Service struct {
 	repo Repository
 	now  func() time.Time
+	sla  SLA
 }
 
 // NewService builds a Service.
-func NewService(repo Repository, now func() time.Time) *Service {
-	return &Service{repo: repo, now: now}
+func NewService(repo Repository, now func() time.Time, sla SLA) *Service {
+	return &Service{repo: repo, now: now, sla: sla}
 }
 
 // DeclareInput is what the declarer provides. An empty Severity means "accept
@@ -120,8 +122,10 @@ type ListFilter struct {
 	State     State
 }
 
-// activeStates are all the states but cerrado (BR-15).
-var activeStates = []State{StateDeclared, StateAcknowledged, StateMitigating, StateResolved}
+// ActiveStates returns all the states but cerrado (BR-15).
+func ActiveStates() []State {
+	return []State{StateDeclared, StateAcknowledged, StateMitigating, StateResolved}
+}
 
 // isActive reports whether an incident in state st is active (BR-15).
 func isActive(st State) bool {
@@ -142,7 +146,7 @@ func (s *Service) List(ctx context.Context, actor user.User, f ListFilter) ([]In
 		return nil, fmt.Errorf("state must be declarado, reconocido, mitigando, resuelto or cerrado: %w", ErrInvalidFilter)
 	}
 
-	states := slices.Clone(activeStates)
+	states := ActiveStates()
 	if f.State != "" {
 		if !isActive(f.State) {
 			return []Incident{}, nil
@@ -158,6 +162,105 @@ func (s *Service) List(ctx context.Context, actor user.User, f ListFilter) ([]In
 	}
 	return list, nil
 }
+
+// Get returns one incident for any authenticated role (BR-10).
+func (s *Service) Get(ctx context.Context, actor user.User, id string) (Incident, error) {
+	if err := authorize(actor); err != nil {
+		return Incident{}, err
+	}
+	inc, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Incident{}, fmt.Errorf("get incident: %w", err)
+	}
+	return inc, nil
+}
+
+// transitions is the only table of valid state changes (BR-08). UC-06 adds
+// T2-T4 here.
+var transitions = map[State][]State{
+	StateDeclared: {StateAcknowledged},
+}
+
+// Transition moves an incident to the state to. Every transition goes through
+// here. The ingeniero never transitions; an oncall only on incidents of the
+// services they are on-call of; the admin always (BR-08, BR-11). T1 sets
+// acknowledged_at and adds a cambio_estado event (BR-09).
+func (s *Service) Transition(ctx context.Context, actor user.User, id string, to State) (Incident, error) {
+	if err := authorize(actor); err != nil {
+		return Incident{}, err
+	}
+	if actor.Role == user.RoleIngeniero {
+		return Incident{}, ErrForbidden
+	}
+	inc, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Incident{}, fmt.Errorf("get incident: %w", err)
+	}
+	if actor.Role == user.RoleOncall {
+		info, err := s.repo.FindService(ctx, inc.ServiceID)
+		if err != nil {
+			return Incident{}, fmt.Errorf("find service: %w", err)
+		}
+		if info.OncallUserID == nil || *info.OncallUserID != actor.ID {
+			return Incident{}, ErrForbidden
+		}
+	}
+	if !slices.Contains(transitions[inc.State], to) {
+		return Incident{}, fmt.Errorf("%s to %s: %w", inc.State, to, ErrInvalidTransition)
+	}
+
+	at := s.now().UTC()
+	author := actor.ID
+	ev := TimelineEvent{
+		Type:       EventStateChange,
+		AuthorID:   &author,
+		Data:       map[string]string{"from": string(inc.State), "to": string(to)},
+		OccurredAt: at,
+	}
+	var ackAt *time.Time
+	if inc.State == StateDeclared && to == StateAcknowledged {
+		ackAt = &at
+	}
+	updated, err := s.repo.UpdateState(ctx, id, inc.State, to, ackAt, ev)
+	if err != nil {
+		return Incident{}, fmt.Errorf("update state: %w", err)
+	}
+	return updated, nil
+}
+
+// EscalateOverdue escalates every declarado incident whose deadline passed
+// (BR-03, BR-04): now > declared_at + SLA(current severity). The escalation
+// instant is the evaluation instant (BR-05). The repository guarantees a single
+// escalation per incident. It returns how many incidents were escalated and
+// keeps going when one of them fails.
+func (s *Service) EscalateOverdue(ctx context.Context) (int, error) {
+	candidates, err := s.repo.ListPendingEscalation(ctx, StateDeclared)
+	if err != nil {
+		return 0, fmt.Errorf("list pending escalation: %w", err)
+	}
+	now := s.now().UTC()
+	escalated := 0
+	var errs []error
+	for _, inc := range candidates {
+		deadline := s.sla.Deadline(inc.Severity)
+		if deadline <= 0 || !now.After(inc.DeclaredAt.Add(deadline)) {
+			continue
+		}
+		ev := TimelineEvent{Type: EventEscalation, AuthorID: nil, Data: map[string]string{}, OccurredAt: now}
+		ok, err := s.repo.Escalate(ctx, inc, ev)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("escalate %s: %w", inc.ID, err))
+			continue
+		}
+		if ok {
+			escalated++
+		}
+	}
+	return escalated, errors.Join(errs...)
+}
+
+// ValidState reports whether st is one of the lifecycle states.
+func ValidState(st State) bool { return validState(st) }
 
 // authorize lets ingeniero, oncall and admin through (BR-10).
 func authorize(actor user.User) error {
