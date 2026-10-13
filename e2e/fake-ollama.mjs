@@ -2,6 +2,8 @@
 // server, so the production binary carries no test code. POST /api/embed answers a deterministic
 // 768-dimension bag of hashed words, normalized: the same text always gives the same vector, a
 // different text a different one, and texts sharing words are close (useful for RAG in UC-10).
+// POST /api/chat (UC-08) answers a fixed analysis in one non-streamed line, as Ollama does with
+// stream: false.
 import { createServer } from 'node:http'
 
 const port = Number(process.env.FAKE_OLLAMA_PORT ?? '11435')
@@ -55,6 +57,24 @@ createServer(async (req, res) => {
     const inputs = Array.isArray(input) ? input : [input]
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ embeddings: inputs.map(embed) }))
+    return
+  }
+  if (req.method === 'POST' && req.url === '/api/chat') {
+    try {
+      await readJson(req)
+    } catch {
+      res.writeHead(400)
+      res.end()
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        model: 'fake',
+        done: true,
+        message: { role: 'assistant', content: 'Análisis del LLM de prueba: el pool de conexiones se agotó.' },
+      }) + '\n',
+    )
     return
   }
   // Like the real server's root: lets Playwright wait until it is up.

@@ -214,3 +214,36 @@ Una entrada por iteración relevante. Es la materia prima del README.
   - Pendiente para UC-10: verificar de punta a punta que el copiloto no recupera un runbook dado de baja (segunda mitad de UC-07.5).
   - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan contra Postgres 16 con pgvector 0.6; la e2e da 56 passed en tres corridas.
 - **Ajuste a las reglas de contexto:** el README documenta la configuración de Ollama y el requisito de superusuario para pgvector.
+
+### 2026-10-13 — UC-08 — Postmortem asistido por LLM
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Si, con A" al plan de UC-08: el contenido es el análisis del LLM más una sección de timeline determinista; el chat se elige entre Groq y Ollama por entorno
+- **Qué propuso el agente:**
+  - **Paquete `internal/postmortem`:**
+    - **Generar:** solo con el incidente `resuelto`, y solo el on-call del servicio o el admin (`incident.CanOperate`). Crea el borrador o reemplaza el existente y agrega un evento `postmortem` `generado` o `regenerado`.
+    - **Editar:** mismos roles, solo en `borrador`, sin evento; el texto se guarda tal como se escribe.
+    - **Aprobar:** solo el admin; fija `approved_by` y `approved_at` con el reloj inyectado y agrega un evento `aprobado`. Un postmortem `aprobado` es inmutable (409).
+    - **Contenido (opción A):** el análisis del LLM más una sección "Timeline" que arma el service, así la cita de los eventos es determinista.
+    - El LLM se llama antes de abrir la transacción; si falla, responde 503 y no escribe nada.
+    - Las escrituras son condicionales a `borrador` y van en la misma transacción que su evento, con `incident.InsertEvent`, que se exportó para no duplicar la inserción append-only.
+  - **Paquete `internal/llm/chat.go`:** Ollama (`/api/chat`) o Groq (cliente OpenAI de LangChainGo), con timeout. Está probado contra servidores fake de los dos protocolos, porque no hay API key ni red hacia Groq.
+  - **Configuración:** `LLM_PROVIDER`, `LLM_MODEL`, `GROQ_API_KEY` y `LLM_BASE_URL`. El backend no arranca con Groq sin clave ni con un proveedor desconocido.
+  - **UI:** sección de postmortem en el detalle del incidente.
+  - **E2E:** `fake-ollama.mjs` suma `/api/chat`.
+  - **Sin migración nueva:** la tabla `postmortems` es de UC-06.
+- **Qué falló y qué capa lo detectó:**
+  - (1) El hook de cierre corrió `make verify` con el `golangci-lint` del contenedor, compilado con Go 1.25, que no carga un módulo 1.27. Problema del entorno, no del código.
+  - (2) El `reviewer` encontró un BLOQUEANTE: Generate verificaba el estado `resuelto` antes de llamar al LLM, que tarda hasta 2 minutos, y `CreateDraft`/`ReplaceDraft` no lo volvían a mirar. Un SEV2 o SEV3 cerrado mientras el LLM respondía recibía igual un borrador y su evento, contra BR-13.
+  - (3) El `reviewer` también marcó estas mejoras:
+    - Approve y Edit no tienen precondición de versión, así que el admin puede aprobar un texto que no vio;
+    - la UI quedaba con un estado viejo tras un 409;
+    - no había test de edición por el admin;
+    - faltaban las variables de chat en el README;
+    - un comentario de la e2e decía algo que no se probaba;
+    - un log futuro de `chatConfig` podía exponer `GROQ_API_KEY`.
+- **Corrección / decisión:**
+  - (1) Se instaló en `/usr/local/bin` un golangci-lint 2.14 compilado con Go 1.27, con copia de la versión original en el scratchpad.
+  - (2) `CreateDraft` y `ReplaceDraft` hacen `SELECT state … FOR SHARE` dentro de su transacción y devuelven `ErrIncidentNotResolved` si el incidente ya no está `resuelto`. `FOR SHARE` hace que una transición concurrente espere. Se agregaron un test unitario (el incidente se cierra mientras el LLM responde) y uno SQL.
+  - (3) Se aplicaron todas las mejoras salvo la precondición de versión, que el spec no pide y queda como decisión del usuario.
+  - Verificación: `make verify` sale con 0 y `gofmt` no marca nada; los tests Go, SQL incluidos, pasan; la e2e da 62 passed en cuatro corridas.
+- **Ajuste a las reglas de contexto:** el README documenta la configuración del chat.

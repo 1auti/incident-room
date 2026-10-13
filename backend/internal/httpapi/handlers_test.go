@@ -20,6 +20,7 @@ import (
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/postmortem"
 	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
@@ -439,6 +440,70 @@ func (f *fakeEmbedder) Embed(context.Context, string) ([]float32, error) {
 	return make([]float32, runbook.Dimensions), nil
 }
 
+// fakePostmortemRepo keeps postmortems in memory with the borrador-only writes
+// of the real repository; the rules are tested in package postmortem.
+type fakePostmortemRepo struct {
+	mu   sync.Mutex
+	byID map[string]postmortem.Postmortem
+}
+
+func (f *fakePostmortemRepo) Find(_ context.Context, incidentID string) (postmortem.Postmortem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pm, ok := f.byID[incidentID]
+	if !ok {
+		return postmortem.Postmortem{}, postmortem.ErrNotFound
+	}
+	return pm, nil
+}
+
+func (f *fakePostmortemRepo) CreateDraft(_ context.Context, pm postmortem.Postmortem, _ incident.TimelineEvent) (postmortem.Postmortem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pm.ID = "pm-" + pm.IncidentID
+	f.byID[pm.IncidentID] = pm
+	return pm, nil
+}
+
+func (f *fakePostmortemRepo) change(incidentID string, apply func(*postmortem.Postmortem)) (postmortem.Postmortem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pm, ok := f.byID[incidentID]
+	if !ok {
+		return postmortem.Postmortem{}, postmortem.ErrNotFound
+	}
+	if pm.Status != postmortem.StatusDraft {
+		return postmortem.Postmortem{}, postmortem.ErrApproved
+	}
+	apply(&pm)
+	f.byID[incidentID] = pm
+	return pm, nil
+}
+
+func (f *fakePostmortemRepo) ReplaceDraft(_ context.Context, incidentID, content string, at time.Time, _ incident.TimelineEvent) (postmortem.Postmortem, error) {
+	return f.change(incidentID, func(pm *postmortem.Postmortem) { pm.Content, pm.UpdatedAt = content, at })
+}
+
+func (f *fakePostmortemRepo) UpdateContent(_ context.Context, incidentID, content string, at time.Time) (postmortem.Postmortem, error) {
+	return f.change(incidentID, func(pm *postmortem.Postmortem) { pm.Content, pm.UpdatedAt = content, at })
+}
+
+func (f *fakePostmortemRepo) Approve(_ context.Context, incidentID, by string, at time.Time, _ incident.TimelineEvent) (postmortem.Postmortem, error) {
+	return f.change(incidentID, func(pm *postmortem.Postmortem) {
+		pm.Status, pm.ApprovedBy, pm.ApprovedAt = postmortem.StatusApproved, &by, &at
+	})
+}
+
+// fakeLLM answers a fixed analysis, or err when set.
+type fakeLLM struct{ err error }
+
+func (f *fakeLLM) Generate(context.Context, string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return "Análisis del incidente", nil
+}
+
 var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 type env struct {
@@ -450,6 +515,7 @@ type env struct {
 	incidents *fakeIncidentRepo
 	runbooks  *fakeRunbookRepo
 	embedder  *fakeEmbedder
+	llm       *fakeLLM
 }
 
 func newEnv(t *testing.T) *env {
@@ -465,8 +531,10 @@ func newEnv(t *testing.T) *env {
 	ms := metrics.NewService(&fakeMetricsRepo{services: services}, func() time.Time { return fixedNow }, incident.DefaultSLA())
 	runbooks, embedder := &fakeRunbookRepo{}, &fakeEmbedder{}
 	rs := runbook.NewService(runbooks, embedder, func() time.Time { return fixedNow })
-	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, ms, rs, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents, runbooks: runbooks, embedder: embedder}
+	llm := &fakeLLM{}
+	ps := postmortem.NewService(incidents, &fakePostmortemRepo{byID: map[string]postmortem.Postmortem{}}, llm, func() time.Time { return fixedNow })
+	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, ms, rs, ps, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents, runbooks: runbooks, embedder: embedder, llm: llm}
 }
 
 func (e *env) do(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -584,6 +652,10 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 		{"POST", "/api/services/svc-1/runbooks", `{"title":"t","content":"c"}`},
 		{"PUT", "/api/runbooks/rb-1", `{"title":"t","content":"c"}`},
 		{"DELETE", "/api/runbooks/rb-1", ""},
+		{"GET", "/api/incidents/inc-1/postmortem", ""},
+		{"POST", "/api/incidents/inc-1/postmortem/generate", ""},
+		{"PUT", "/api/incidents/inc-1/postmortem", `{"content":"x"}`},
+		{"POST", "/api/incidents/inc-1/postmortem/approve", ""},
 	} {
 		w := e.do(tc.method, tc.path, tc.body, nil)
 		if w.Code != http.StatusUnauthorized {
@@ -1379,5 +1451,68 @@ func TestUC07_RunbooksPorAPI(t *testing.T) {
 	}
 	if w := e.do("DELETE", "/api/runbooks/"+id, "", admin); w.Code != http.StatusNotFound {
 		t.Errorf("second delete status = %d, want 404", w.Code)
+	}
+}
+
+func TestUC08_PostmortemPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+	svcID := e.createService(t, admin, "Pagos")
+	if w := e.do("PUT", "/api/services/"+svcID+"/oncall", `{"user_id":"`+userID("oli@x.com")+`"}`, admin); w.Code != http.StatusOK {
+		t.Fatalf("assign status = %d", w.Code)
+	}
+	id := e.declareOn(t, eng, svcID)
+	base := "/api/incidents/" + id + "/postmortem"
+	status := func(method, path, body string, c *http.Cookie) int { return e.do(method, path, body, c).Code }
+
+	if got := status("POST", base+"/generate", "", oncall); got != http.StatusConflict {
+		t.Errorf("generate on declarado = %d, want 409", got)
+	}
+	e.incidents.incidents[0].State = incident.StateResolved
+	if got := status("POST", base+"/generate", "", eng); got != http.StatusForbidden {
+		t.Errorf("ingeniero generate = %d, want 403", got)
+	}
+	e.llm.err = errors.New("connection refused")
+	if got := status("POST", base+"/generate", "", oncall); got != http.StatusServiceUnavailable {
+		t.Errorf("LLM down generate = %d, want 503", got)
+	}
+	e.llm.err = nil
+	if got := status("GET", base, "", eng); got != http.StatusNotFound {
+		t.Errorf("get before generate = %d, want 404", got)
+	}
+
+	w := e.do("POST", base+"/generate", "", oncall)
+	var pm map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &pm)
+	if w.Code != http.StatusOK || pm["status"] != "borrador" || pm["generated_by_llm"] != true ||
+		!strings.Contains(pm["content"].(string), "Análisis del incidente") {
+		t.Fatalf("generate = %d %s", w.Code, w.Body)
+	}
+	if got := status("GET", base, "", eng); got != http.StatusOK {
+		t.Errorf("ingeniero get = %d, want 200", got)
+	}
+	if got := status("PUT", base, `{"content":"  "}`, oncall); got != http.StatusBadRequest {
+		t.Errorf("blank edit = %d, want 400", got)
+	}
+	if got := status("PUT", base, `{"content":"Texto editado"}`, oncall); got != http.StatusOK {
+		t.Errorf("edit = %d, want 200", got)
+	}
+	if got := status("POST", base+"/approve", "", oncall); got != http.StatusForbidden {
+		t.Errorf("oncall approve = %d, want 403", got)
+	}
+
+	w = e.do("POST", base+"/approve", "", admin)
+	_ = json.Unmarshal(w.Body.Bytes(), &pm)
+	if w.Code != http.StatusOK || pm["status"] != "aprobado" || pm["approved_by"] != userID("root@x.com") || pm["approved_at"] != "2026-10-01T10:00:00Z" {
+		t.Fatalf("approve = %d %s", w.Code, w.Body)
+	}
+	for _, tc := range []struct{ method, path, body string }{
+		{"PUT", base, `{"content":"otro"}`},
+		{"POST", base + "/generate", ""},
+		{"POST", base + "/approve", ""},
+	} {
+		if got := status(tc.method, tc.path, tc.body, admin); got != http.StatusConflict {
+			t.Errorf("%s %s on approved = %d, want 409", tc.method, tc.path, got)
+		}
 	}
 }

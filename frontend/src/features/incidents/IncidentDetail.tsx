@@ -8,6 +8,7 @@ import {
   type State,
 } from '../../api/incidents'
 import { IncidentTimeline } from './IncidentTimeline'
+import { PostmortemSection } from './PostmortemSection'
 
 interface Props {
   incidentId: string
@@ -161,6 +162,7 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
               Cerrar incidente
             </button>
           )}
+          <PostmortemSection incidentId={incidentId} onEvent={() => setTimelineReloads((n) => n + 1)} />
           <IncidentTimeline incidentId={incidentId} reloadToken={timelineReloads} />
         </div>
       )}

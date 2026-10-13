@@ -116,7 +116,7 @@ func (r *PostgresRepository) Create(ctx context.Context, inc Incident, events []
 
 	stored := make([]TimelineEvent, 0, len(events))
 	for _, e := range events {
-		out, err := insertEvent(ctx, tx, created.ID, e)
+		out, err := InsertEvent(ctx, tx, created.ID, e)
 		if err != nil {
 			return Incident{}, nil, err
 		}
@@ -182,7 +182,7 @@ func (r *PostgresRepository) Escalate(ctx context.Context, inc Incident, ev Time
 	if tag.RowsAffected() == 0 {
 		return false, nil
 	}
-	if _, err := insertEvent(ctx, tx, inc.ID, ev); err != nil {
+	if _, err := InsertEvent(ctx, tx, inc.ID, ev); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -223,7 +223,7 @@ func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, t
 	if err != nil {
 		return Incident{}, fmt.Errorf("update state: %w", err)
 	}
-	if _, err := insertEvent(ctx, tx, id, ev); err != nil {
+	if _, err := InsertEvent(ctx, tx, id, ev); err != nil {
 		return Incident{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -284,7 +284,7 @@ func (r *PostgresRepository) AppendEvent(ctx context.Context, incidentID string,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	out, err := insertEvent(ctx, tx, incidentID, ev)
+	out, err := InsertEvent(ctx, tx, incidentID, ev)
 	if code := pgErrCode(err); code == pgForeignKeyViolation || code == pgInvalidTextRepresen {
 		return TimelineEvent{}, ErrNotFound
 	}
@@ -332,7 +332,7 @@ func (r *PostgresRepository) ChangeSeverity(ctx context.Context, id string, from
 	if err != nil {
 		return Incident{}, fmt.Errorf("update severity: %w", err)
 	}
-	if _, err := insertEvent(ctx, tx, id, ev); err != nil {
+	if _, err := InsertEvent(ctx, tx, id, ev); err != nil {
 		return Incident{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -341,8 +341,10 @@ func (r *PostgresRepository) ChangeSeverity(ctx context.Context, id string, from
 	return inc, nil
 }
 
-// insertEvent appends one timeline event; events are only ever inserted (BR-09).
-func insertEvent(ctx context.Context, tx pgx.Tx, incidentID string, e TimelineEvent) (TimelineEvent, error) {
+// InsertEvent appends one timeline event inside tx; events are only ever
+// inserted (BR-09). It is exported so other repositories that write an event
+// with their own change (postmortem, UC-08) share this single insert.
+func InsertEvent(ctx context.Context, tx pgx.Tx, incidentID string, e TimelineEvent) (TimelineEvent, error) {
 	data := e.Data
 	if data == nil {
 		data = map[string]string{}
