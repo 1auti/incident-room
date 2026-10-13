@@ -155,3 +155,32 @@ Una entrada por iteración relevante. Es la materia prima del README.
   - (3) El recorte de la causa raíz se mantiene, por el mismo criterio que las notas de UC-05; queda para que el usuario lo confirme.
   - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan contra Postgres 16; la suite e2e da 43 passed en tres corridas con la base limpia.
 - **Ajuste a las reglas de contexto:** ninguno.
+
+### 2026-10-13 — UC-09 — Dashboard de métricas
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Dale" para armar el plan de UC-09; el usuario aprobó la opción A ("A, aprobado")
+- **Qué propuso el agente:**
+  - **Paquete `backend/internal/metrics`:** el repositorio trae filas filtradas por `[desde, hasta)` (por `resolved_at` para MTTR y por `declared_at` para conteo y SLA) y el service calcula las métricas en Go con el reloj inyectado, reutilizando `incident.SLA`.
+  - **MTTR (BR-16):** promedio de `resolved_at − declared_at`; `null` si no hay datos.
+  - **Conteo por servicio (BR-17):** incluye los servicios con 0.
+  - **SLA (BR-18):** un incidente es elegible si fue reconocido o si `ahora > plazo` (el mismo límite que usa BR-04), y cumple si `acknowledged_at ≤ plazo`. Sin elegibles, `null`.
+  - **API:** `GET /api/metrics?period=7d|30d` o `?from=&to=` en RFC 3339; sin parámetros, 30 días.
+  - **UI:** `MetricsDashboard` con los preajustes y un rango libre en días UTC con "hasta" incluido, que se envía como el día siguiente a las 00:00. Cuando no hay valor muestra "Sin datos", nunca 0.
+  - **E2E:** cada test carga datos por SQL en su propia ventana aleatoria de un día. UC-09.4 usa una ventana en el futuro para tener un incidente todavía dentro de plazo sin cruzarse con lo que los demás tests declaran en el momento actual.
+- **Qué falló y qué capa lo detectó:**
+  - (1) `golangci-lint` (unused) detectó un `Period.contains` muerto mío.
+  - (2) El Postgres local de pruebas se cayó entre UC-06 y UC-09, por un reinicio del contenedor; lo detectó un test SQL con "connection refused".
+  - (3) El `reviewer` no halló bloqueantes. Marcó como mejoras:
+    - los tests de BR-18 no eran table-driven;
+    - los preajustes estaban duplicados entre handler y service;
+    - el orden de `from` y `to` dependía de iterar un map;
+    - faltaba una fila sin resolver en el test SQL;
+    - la ventana vacía de UC-09.2 podía coincidir con otra.
+  - (4) El log del backend muestra `internal error ... context canceled` cuando el navegador cancela una petición al navegar. Viene de `RequireAuth` (UC-01), no de este cambio.
+- **Corrección / decisión:**
+  - (1) Se borró el método muerto.
+  - (2) Se relanzó el Postgres local.
+  - (3) Se aplicaron las mejoras: tabla con los bordes de BR-18 (en el plazo, 1 s tarde, vencido sin reconocer); el handler solo parsea `<n>d` y valida el service; `from`/`to` se leen en orden fijo; fila sin resolver en el test SQL; ventana vacía en su propio rango de años. Los tests de BR-16 y BR-17 siguen como escenarios únicos, igual que en el resto del repo.
+  - (4) Queda como deuda: `RequireAuth` debería tratar `context.Canceled` como cancelación del cliente y no loguearlo como error interno.
+  - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan; la e2e completa da 49 passed en tres corridas.
+- **Ajuste a las reglas de contexto:** ninguno.

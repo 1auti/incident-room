@@ -18,6 +18,7 @@ import (
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/metrics"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -355,6 +356,27 @@ func (f *fakeIncidentRepo) ChangeSeverity(_ context.Context, id string, from, to
 	return incident.Incident{}, incident.ErrNotFound
 }
 
+// fakeMetricsRepo has no incidents: the metric rules are tested in package metrics.
+type fakeMetricsRepo struct{ services *fakeServiceRepo }
+
+func (f *fakeMetricsRepo) ResolvedIn(context.Context, metrics.Period) ([]metrics.ResolvedRow, error) {
+	return nil, nil
+}
+
+func (f *fakeMetricsRepo) DeclaredIn(context.Context, metrics.Period) ([]metrics.DeclaredRow, error) {
+	return nil, nil
+}
+
+func (f *fakeMetricsRepo) Services(context.Context) ([]metrics.ServiceRef, error) {
+	f.services.mu.Lock()
+	defer f.services.mu.Unlock()
+	out := make([]metrics.ServiceRef, len(f.services.list))
+	for i, s := range f.services.list {
+		out[i] = metrics.ServiceRef{ID: s.ID, Name: s.Name}
+	}
+	return out, nil
+}
+
 var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 type env struct {
@@ -376,7 +398,8 @@ func newEnv(t *testing.T) *env {
 	incidents := &fakeIncidentRepo{services: services}
 	is := incident.NewService(incidents, func() time.Time { return fixedNow }, incident.DefaultSLA())
 	ts := timeline.NewService(incidents, func() time.Time { return fixedNow })
-	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ms := metrics.NewService(&fakeMetricsRepo{services: services}, func() time.Time { return fixedNow }, incident.DefaultSLA())
+	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, ms, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents}
 }
 
@@ -490,6 +513,7 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 		{"GET", "/api/incidents/inc-1/timeline", ""},
 		{"POST", "/api/incidents/inc-1/notes", `{"body":"hola"}`},
 		{"PATCH", "/api/incidents/inc-1/severity", `{"severity":"SEV1"}`},
+		{"GET", "/api/metrics", ""},
 	} {
 		w := e.do(tc.method, tc.path, tc.body, nil)
 		if w.Code != http.StatusUnauthorized {
@@ -1173,5 +1197,51 @@ func TestUC06_TransicionesPorAPI(t *testing.T) {
 	e.incidents.incidents[0].Severity = incident.SeveritySEV3
 	if got := step(`{"to":"cerrado"}`, http.StatusOK); got["state"] != "cerrado" {
 		t.Errorf("closed = %v", got)
+	}
+}
+
+func TestUC09_DashboardPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	e.createService(t, admin, "Pagos")
+
+	get := func(query string) (int, map[string]any) {
+		w := e.do("GET", "/api/metrics"+query, "", eng)
+		var got map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		return w.Code, got
+	}
+	for query, want := range map[string]string{
+		"":            "2026-09-01T10:00:00Z",
+		"?period=30d": "2026-09-01T10:00:00Z",
+		"?period=7d":  "2026-09-24T10:00:00Z",
+		"?from=2026-09-20T00:00:00Z&to=2026-09-21T00:00:00Z": "2026-09-20T00:00:00Z",
+	} {
+		code, got := get(query)
+		if code != http.StatusOK || got["from"] != want {
+			t.Errorf("%q: status = %d, from = %v; want 200, %s", query, code, got["from"], want)
+		}
+	}
+
+	// No data is null, never 0 (BR-16, BR-18); every service is listed with its count (BR-17).
+	_, got := get("")
+	if v, ok := got["mttr_seconds"]; !ok || v != nil {
+		t.Errorf("mttr_seconds = %v (present %v), want null", v, ok)
+	}
+	if v, ok := got["sla_compliance_percent"]; !ok || v != nil {
+		t.Errorf("sla_compliance_percent = %v (present %v), want null", v, ok)
+	}
+	byService, _ := got["incidents_by_service"].([]any)
+	if len(byService) != 1 || byService[0].(map[string]any)["count"] != float64(0) {
+		t.Errorf("incidents_by_service = %v, want Pagos with 0", got["incidents_by_service"])
+	}
+
+	for _, query := range []string{
+		"?period=14d", "?from=ayer&to=2026-09-21T00:00:00Z", "?from=2026-09-20T00:00:00Z",
+		"?from=2026-09-21T00:00:00Z&to=2026-09-20T00:00:00Z", "?period=7d&from=2026-09-20T00:00:00Z&to=2026-09-21T00:00:00Z",
+	} {
+		if code, _ := get(query); code != http.StatusBadRequest {
+			t.Errorf("%q status = %d, want 400", query, code)
+		}
 	}
 }

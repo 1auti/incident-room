@@ -25,6 +25,7 @@ import (
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/metrics"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -78,6 +79,7 @@ func run() error {
 	incidentRepo := incident.NewPostgresRepository(pool)
 	incidentSvc := incident.NewService(incidentRepo, time.Now, sla)
 	timelineSvc := timeline.NewService(incidentRepo, time.Now)
+	metricsSvc := metrics.NewService(metrics.NewPostgresRepository(pool), time.Now, sla)
 
 	if email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && password != "" {
 		if err := userSvc.EnsureAdmin(ctx, email, password); err != nil {
@@ -106,7 +108,7 @@ func run() error {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, logger), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, logger), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
 
