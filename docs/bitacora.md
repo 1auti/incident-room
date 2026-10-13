@@ -104,3 +104,29 @@ Una entrada por iteración relevante. Es la materia prima del README.
 - **Ajuste a las reglas de contexto:** `AGENTS.md`: la guía de lectura menciona que el LSP viene de plugins y necesita los binarios.
 
 ---
+
+### 2026-10-13 — UC-05 — Timeline del incidente: notas y cambio de severidad
+- **Herramienta / agente:** Claude Code (implementación directa, sin la cadena `/uc`, a pedido del usuario) y subagente `reviewer` (revisión del diff)
+- **Prompt o comando:** "Implementa los casos de uso que faltan"; el usuario eligió hacerlos uno por vez empezando por UC-05, con la implementación directa más `reviewer`, y aprobó el plan
+- **Qué propuso el agente:** paquete `backend/internal/timeline` (service con `List`, `AddNote` y `ChangeSeverity`, y un `Repository` que solo lista e inserta eventos), `incident.CanOperate` extraído de `Transition` como única fuente de BR-11 para operar un incidente, y rutas `GET /api/incidents/{id}/timeline`, `POST …/notes` y `PATCH …/severity`. Cualquier método sobre `…/timeline/{eventID}` responde 405 explícito (BR-09). En la UI, la timeline va en el detalle del incidente con el autor ("Sistema" si `author_id` es null), un formulario de nota y un selector de severidad. La UI no decide permisos: muestra el 403 o el 409 del backend. Decisiones del usuario: una nota vacía y cambiar a la misma severidad devuelven 400.
+- **Qué falló y qué capa lo detectó:**
+  - (1) Desvío del plan: el SQL nuevo quedó en `incident.PostgresRepository` y no en `timeline/postgres.go`, para reutilizar `scanIncident` e `insertEvent` sin duplicarlos. El `reviewer` lo aceptó.
+  - (2) Dos e2e asumían "cero `cambio_severidad`" en incidentes declarados con una severidad distinta de la sugerida, pero ese evento de la declaración es legítimo (BR-02). Lo detectó la corrida de e2e.
+  - (3) El `data-testid` `incident-severity-select` chocaba con el del formulario de declaración. Lo detectó el modo estricto de Playwright.
+  - (4) El `reviewer` no halló bloqueantes. Sí marcó varias mejoras:
+    - la ruta 405 quedaba fuera de `requireAuth` (un visitante recibía 405 y no 401, contra BR-10);
+    - el mensaje del 409 era falso en una carrera de severidad;
+    - el corte de `ingeniero` estaba duplicado frente a `CanOperate`;
+    - había una condición muerta en un test;
+    - "Sistema" se decidía por el nombre y no por `author_id`.
+  - (5) Problemas del entorno: no hay Docker; el `golangci-lint` del contenedor está compilado con Go 1.25 y no carga el módulo 1.27; Playwright 1.63 espera otra revisión de Chromium.
+- **Corrección / decisión:**
+  - (2) Se cambiaron los dos tests: UC-05.2 declara con la sugerida y UC-05.5 compara la timeline antes y después de los intentos.
+  - (3) El selector pasó a `incident-detail-severity-select`.
+  - (4) Se aplicaron las cinco mejoras. Quedaron sin aplicar: los wrappers exportados `Authorize` y `ValidSeverity` (siguen el patrón existente de `ValidState`), `dispose()` de los contextos en e2e (ningún spec previo lo hace) y el comentario de `e2e/uc-04.spec.ts`, que todavía dice que no hay API para subir la severidad.
+  - Sin migración nueva: el orden ante empates de `occurred_at` (declaración y su `cambio_severidad`) se desempata por `id`, no por orden de inserción.
+  - (5) Verificación propia:
+    - `make verify` sale con 0, con un golangci-lint 2.14 compilado con Go 1.27 en el PATH;
+    - los tests Go, SQL incluidos, pasan contra un Postgres 16 local descartable;
+    - la suite e2e completa da 37 passed en tres corridas.
+- **Ajuste a las reglas de contexto:** ninguno.

@@ -30,6 +30,11 @@ export interface TimelineEvent {
   occurred_at: string
 }
 
+// A timeline entry as listed: author_name is null for system events (e.g. escalado).
+export interface TimelineEntry extends TimelineEvent {
+  author_name: string | null
+}
+
 export interface DeclareResult {
   incident: Incident
   timeline: TimelineEvent[]
@@ -82,6 +87,28 @@ export async function transitionIncident(id: string, to: State): Promise<Inciden
   const res = await request<Incident>(`/api/incidents/${encodeURIComponent(id)}/transitions`, {
     method: 'POST',
     body: { to },
+  })
+  if (!res) throw new ApiError(500, 'empty response')
+  return res
+}
+
+export async function getTimeline(id: string): Promise<TimelineEntry[]> {
+  return (await request<TimelineEntry[]>(`/api/incidents/${encodeURIComponent(id)}/timeline`)) ?? []
+}
+
+export async function addNote(id: string, body: string): Promise<TimelineEvent> {
+  const res = await request<TimelineEvent>(`/api/incidents/${encodeURIComponent(id)}/notes`, {
+    method: 'POST',
+    body: { body },
+  })
+  if (!res) throw new ApiError(500, 'empty response')
+  return res
+}
+
+export async function changeSeverity(id: string, severity: Severity): Promise<Incident> {
+  const res = await request<Incident>(`/api/incidents/${encodeURIComponent(id)}/severity`, {
+    method: 'PATCH',
+    body: { severity },
   })
   if (!res) throw new ApiError(500, 'empty response')
   return res

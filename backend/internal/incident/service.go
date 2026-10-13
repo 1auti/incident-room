@@ -196,14 +196,12 @@ func (s *Service) Transition(ctx context.Context, actor user.User, id string, to
 	if err != nil {
 		return Incident{}, fmt.Errorf("get incident: %w", err)
 	}
-	if actor.Role == user.RoleOncall {
-		info, err := s.repo.FindService(ctx, inc.ServiceID)
-		if err != nil {
-			return Incident{}, fmt.Errorf("find service: %w", err)
-		}
-		if info.OncallUserID == nil || *info.OncallUserID != actor.ID {
-			return Incident{}, ErrForbidden
-		}
+	info, err := s.repo.FindService(ctx, inc.ServiceID)
+	if err != nil {
+		return Incident{}, fmt.Errorf("find service: %w", err)
+	}
+	if !CanOperate(actor, info) {
+		return Incident{}, ErrForbidden
 	}
 	if !slices.Contains(transitions[inc.State], to) {
 		return Incident{}, fmt.Errorf("%s to %s: %w", inc.State, to, ErrInvalidTransition)
@@ -261,6 +259,25 @@ func (s *Service) EscalateOverdue(ctx context.Context) (int, error) {
 
 // ValidState reports whether st is one of the lifecycle states.
 func ValidState(st State) bool { return validState(st) }
+
+// ValidSeverity reports whether sev is SEV1, SEV2 or SEV3.
+func ValidSeverity(sev Severity) bool { return validSeverity(sev) }
+
+// Authorize lets ingeniero, oncall and admin through (BR-10).
+func Authorize(actor user.User) error { return authorize(actor) }
+
+// CanOperate reports whether actor may operate an incident of the service
+// described by info: the admin always, an oncall only when they are the
+// service's on-call (BR-11). It backs transitions and severity changes.
+func CanOperate(actor user.User, info ServiceInfo) bool {
+	switch actor.Role {
+	case user.RoleAdmin:
+		return true
+	case user.RoleOncall:
+		return info.OncallUserID != nil && *info.OncallUserID == actor.ID
+	}
+	return false
+}
 
 // authorize lets ingeniero, oncall and admin through (BR-10).
 func authorize(actor user.User) error {
