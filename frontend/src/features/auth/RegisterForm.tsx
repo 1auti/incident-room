@@ -1,5 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { register } from '../../api/auth'
+import { Alert } from '../../ui/Alert'
+import { Button } from '../../ui/Button'
+import { Field, controlClass } from '../../ui/Field'
 
 interface Props {
   onRegistered: () => void
@@ -28,17 +31,34 @@ export function RegisterForm({ onRegistered, onShowLogin }: Props) {
   }
 
   return (
-    <form data-testid="register-form" onSubmit={submit}>
+    <form
+      data-testid="register-form"
+      onSubmit={submit}
+      className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800"
+    >
       <h1>Crear cuenta</h1>
-      <label>
+      <Field>
         Nombre
-        <input data-testid="register-name" value={name} onChange={(e) => setName(e.target.value)} required />
-      </label>
-      <label>
+        <input
+          data-testid="register-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+          className={controlClass}
+        />
+      </Field>
+      <Field>
         Email
-        <input data-testid="register-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-      </label>
-      <label>
+        <input
+          data-testid="register-email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          className={controlClass}
+        />
+      </Field>
+      <Field>
         Contraseña
         <input
           data-testid="register-password"
@@ -46,11 +66,20 @@ export function RegisterForm({ onRegistered, onShowLogin }: Props) {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
+          className={controlClass}
         />
-      </label>
-      {error && <p role="alert" data-testid="register-error">{error}</p>}
-      <button data-testid="register-submit" type="submit" disabled={busy}>Registrarme</button>
-      <button data-testid="show-login" type="button" onClick={onShowLogin}>Ya tengo cuenta</button>
+      </Field>
+      {error && (
+        <Alert role="alert" data-testid="register-error">
+          {error}
+        </Alert>
+      )}
+      <Button data-testid="register-submit" type="submit" disabled={busy}>
+        Registrarme
+      </Button>
+      <Button data-testid="show-login" type="button" variant="secondary" onClick={onShowLogin}>
+        Ya tengo cuenta
+      </Button>
     </form>
   )
 }
