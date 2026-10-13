@@ -7,39 +7,59 @@ import { DeclareIncidentForm } from './features/incidents/DeclareIncidentForm'
 import { MetricsDashboard } from './features/metrics/MetricsDashboard'
 import { RunbooksPanel } from './features/runbooks/RunbooksPanel'
 import { ServicesPage } from './features/services/ServicesPage'
+import { AppShell } from './shell/AppShell'
+import { useView } from './shell/useView'
+import { Card } from './ui/Card'
+import { Drawer } from './ui/Drawer'
+import { Modal } from './ui/Modal'
 
 export default function App() {
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null)
+  const [view, setView] = useView()
+  const [declareOpen, setDeclareOpen] = useState(false)
+  const [runbooksOpen, setRunbooksOpen] = useState(false)
+  const [copilotOpen, setCopilotOpen] = useState(false)
   return (
     <AuthGate>
       {(user) => (
-        <main data-testid="app-home" className="min-h-screen">
-          <header className="border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
-            <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3">
-              <h1>Incident Room</h1>
-              <p className="text-sm text-slate-600 dark:text-slate-300">
-                <span data-testid="current-user-name">{user.name}</span> (
-                <span data-testid="current-user-role">{user.role}</span>)
-              </p>
+        <AppShell
+          user={user}
+          view={view}
+          onNavigate={setView}
+          onDeclare={() => setDeclareOpen(true)}
+          onOpenRunbooks={() => setRunbooksOpen(true)}
+          onOpenCopilot={() => setCopilotOpen(true)}
+        >
+          {view === 'dashboard' && (
+            <Card title="Dashboard" data-testid="kpi-dashboard-placeholder">
+              <p className="text-sm">Resumen de incidentes próximamente.</p>
+            </Card>
+          )}
+          {view === 'incidents' && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <IncidentBoard onOpen={setSelectedIncidentId} />
+              {selectedIncidentId !== null && (
+                // key: opening another incident starts a fresh detail, so no draft (e.g. a root cause) leaks into it.
+                <IncidentDetail
+                  key={selectedIncidentId}
+                  incidentId={selectedIncidentId}
+                  onClose={() => setSelectedIncidentId(null)}
+                />
+              )}
             </div>
-          </header>
-          <div className="mx-auto grid max-w-7xl gap-4 px-4 py-4 lg:grid-cols-2">
-            <ServicesPage user={user} />
-            <IncidentBoard onOpen={setSelectedIncidentId} />
-            {selectedIncidentId !== null && (
-              // key: opening another incident starts a fresh detail, so no draft (e.g. a root cause) leaks into it.
-              <IncidentDetail
-                key={selectedIncidentId}
-                incidentId={selectedIncidentId}
-                onClose={() => setSelectedIncidentId(null)}
-              />
-            )}
+          )}
+          {view === 'services' && <ServicesPage user={user} />}
+          {view === 'metrics' && <MetricsDashboard />}
+          <Modal open={declareOpen} onClose={() => setDeclareOpen(false)} label="Declarar incidente">
             <DeclareIncidentForm />
-            <MetricsDashboard />
+          </Modal>
+          <Drawer open={runbooksOpen} onClose={() => setRunbooksOpen(false)} label="Runbooks">
             <RunbooksPanel user={user} />
+          </Drawer>
+          <Drawer open={copilotOpen} onClose={() => setCopilotOpen(false)} label="Copiloto">
             <CopilotPanel />
-          </div>
-        </main>
+          </Drawer>
+        </AppShell>
       )}
     </AuthGate>
   )
