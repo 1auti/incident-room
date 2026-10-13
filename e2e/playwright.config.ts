@@ -13,6 +13,7 @@ const adminEmail = required('ADMIN_EMAIL')
 const adminPassword = required('ADMIN_PASSWORD')
 const apiPort = process.env.E2E_API_PORT ?? '18080'
 const webPort = process.env.E2E_WEB_PORT ?? '15173'
+const ollamaPort = process.env.E2E_OLLAMA_PORT ?? '11435'
 const apiUrl = `http://127.0.0.1:${apiPort}`
 const webUrl = `http://127.0.0.1:${webPort}`
 
@@ -25,6 +26,15 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
   webServer: [
     {
+      // Stands in for Ollama (embeddings) at the HTTP boundary; see fake-ollama.mjs.
+      name: 'fake-ollama',
+      command: 'node fake-ollama.mjs',
+      env: { FAKE_OLLAMA_PORT: ollamaPort },
+      url: `http://127.0.0.1:${ollamaPort}/`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    {
       name: 'backend',
       command: 'go run ./cmd/api',
       cwd: '../backend',
@@ -35,6 +45,7 @@ export default defineConfig({
         ADMIN_PASSWORD: adminPassword,
         // Fast ticker so SLA escalation (UC-04) is observable within a test.
         ESCALATION_INTERVAL: '1s',
+        OLLAMA_URL: `http://127.0.0.1:${ollamaPort}`,
       },
       // 401 counts as ready: the server is up and unauthenticated.
       url: `${apiUrl}/api/me`,

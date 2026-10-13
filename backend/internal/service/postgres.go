@@ -107,11 +107,18 @@ func (r *PostgresRepository) HasIncidents(ctx context.Context, id string) (bool,
 	return has, nil
 }
 
-// HasRunbooks reports whether any runbook references the service. No table
-// references services yet; UC-07 replaces this body with
-// SELECT EXISTS (...) over runbooks.
-func (r *PostgresRepository) HasRunbooks(context.Context, string) (bool, error) {
-	return false, nil
+// HasRunbooks reports whether any runbook references the service (BR-20).
+// A malformed id is ErrNotFound, like HasIncidents.
+func (r *PostgresRepository) HasRunbooks(ctx context.Context, id string) (bool, error) {
+	var has bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM runbooks WHERE service_id = $1)`, id).Scan(&has)
+	if pgErrCode(err) == pgInvalidTextRepresen {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("check runbooks: %w", err)
+	}
+	return has, nil
 }
 
 // SetOncall changes the on-call and reassigns the active incidents in one

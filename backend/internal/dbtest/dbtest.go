@@ -16,7 +16,7 @@ import (
 
 // Pool connects using TEST_DATABASE_URL (never DATABASE_URL, which the API
 // uses and may point to a real database). Each call creates a uniquely named
-// schema, returns a pool whose search_path is that schema with the migrations
+// schema, returns a pool whose search_path is that schema (then public, for extensions) with the migrations
 // applied, and drops the schema (CASCADE) on cleanup, so tests neither share
 // state nor delete data outside their own schema. It skips the test when
 // TEST_DATABASE_URL is unset.
@@ -52,7 +52,9 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	if err != nil {
 		t.Fatalf("parse url: %v", err)
 	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	// public stays on the path for the extensions installed there (pgvector, UC-07); the
+	// test's own objects are created in its schema, the first one.
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ", public"
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("connect to schema: %v", err)

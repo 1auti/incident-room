@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -377,6 +379,66 @@ func (f *fakeMetricsRepo) Services(context.Context) ([]metrics.ServiceRef, error
 	return out, nil
 }
 
+// fakeRunbookRepo keeps runbooks in memory; the rules are tested in package runbook.
+type fakeRunbookRepo struct {
+	mu   sync.Mutex
+	rows []runbook.Runbook
+}
+
+func (f *fakeRunbookRepo) ListByService(_ context.Context, serviceID string) ([]runbook.Runbook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []runbook.Runbook
+	for _, rb := range f.rows {
+		if rb.ServiceID == serviceID {
+			out = append(out, rb)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRunbookRepo) Create(_ context.Context, rb runbook.Runbook, _ []float32) (runbook.Runbook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rb.ID = fmt.Sprintf("rb-%d", len(f.rows)+1)
+	f.rows = append(f.rows, rb)
+	return rb, nil
+}
+
+func (f *fakeRunbookRepo) Update(_ context.Context, rb runbook.Runbook, _ []float32) (runbook.Runbook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID == rb.ID {
+			f.rows[i].Title, f.rows[i].Content, f.rows[i].UpdatedAt = rb.Title, rb.Content, rb.UpdatedAt
+			return f.rows[i], nil
+		}
+	}
+	return runbook.Runbook{}, runbook.ErrNotFound
+}
+
+func (f *fakeRunbookRepo) Delete(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID == id {
+			f.rows = append(f.rows[:i], f.rows[i+1:]...)
+			return nil
+		}
+	}
+	return runbook.ErrNotFound
+}
+
+// fakeEmbedder returns a vector of the stored size, or err when set.
+type fakeEmbedder struct{ err error }
+
+func (f *fakeEmbedder) Embed(context.Context, string) ([]float32, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return make([]float32, runbook.Dimensions), nil
+}
+
 var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 type env struct {
@@ -386,6 +448,8 @@ type env struct {
 	usersSvc  *user.Service
 	services  *fakeServiceRepo
 	incidents *fakeIncidentRepo
+	runbooks  *fakeRunbookRepo
+	embedder  *fakeEmbedder
 }
 
 func newEnv(t *testing.T) *env {
@@ -399,8 +463,10 @@ func newEnv(t *testing.T) *env {
 	is := incident.NewService(incidents, func() time.Time { return fixedNow }, incident.DefaultSLA())
 	ts := timeline.NewService(incidents, func() time.Time { return fixedNow })
 	ms := metrics.NewService(&fakeMetricsRepo{services: services}, func() time.Time { return fixedNow }, incident.DefaultSLA())
-	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, ms, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents}
+	runbooks, embedder := &fakeRunbookRepo{}, &fakeEmbedder{}
+	rs := runbook.NewService(runbooks, embedder, func() time.Time { return fixedNow })
+	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, ms, rs, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents, runbooks: runbooks, embedder: embedder}
 }
 
 func (e *env) do(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -514,6 +580,10 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 		{"POST", "/api/incidents/inc-1/notes", `{"body":"hola"}`},
 		{"PATCH", "/api/incidents/inc-1/severity", `{"severity":"SEV1"}`},
 		{"GET", "/api/metrics", ""},
+		{"GET", "/api/services/svc-1/runbooks", ""},
+		{"POST", "/api/services/svc-1/runbooks", `{"title":"t","content":"c"}`},
+		{"PUT", "/api/runbooks/rb-1", `{"title":"t","content":"c"}`},
+		{"DELETE", "/api/runbooks/rb-1", ""},
 	} {
 		w := e.do(tc.method, tc.path, tc.body, nil)
 		if w.Code != http.StatusUnauthorized {
@@ -1243,5 +1313,71 @@ func TestUC09_DashboardPorAPI(t *testing.T) {
 		if code, _ := get(query); code != http.StatusBadRequest {
 			t.Errorf("%q status = %d, want 400", query, code)
 		}
+	}
+}
+
+func TestUC07_RunbooksPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+	svcID := e.createService(t, admin, "Pagos")
+	path := "/api/services/" + svcID + "/runbooks"
+	body := `{"title":"Pool agotado","content":"Paso 1: reiniciar el pool"}`
+
+	for name, c := range map[string]*http.Cookie{"ingeniero": eng, "oncall": oncall} {
+		if w := e.do("POST", path, body, c); w.Code != http.StatusForbidden {
+			t.Errorf("%s create status = %d, want 403", name, w.Code)
+		}
+	}
+	for name, b := range map[string]string{"json invalido": `{`, "sin titulo": `{"content":"c"}`, "sin contenido": `{"title":"t"}`} {
+		if w := e.do("POST", path, b, admin); w.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", name, w.Code)
+		}
+	}
+	e.embedder.err = errors.New("connection refused")
+	if w := e.do("POST", path, body, admin); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("embedder down status = %d, want 503", w.Code)
+	}
+	e.embedder.err = nil
+	if len(e.runbooks.rows) != 0 {
+		t.Fatalf("rejected creations stored runbooks: %+v", e.runbooks.rows)
+	}
+
+	w := e.do("POST", path, body, admin)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	if w.Code != http.StatusCreated || created["service_id"] != svcID || created["title"] != "Pool agotado" {
+		t.Fatalf("create status = %d, body %s", w.Code, w.Body)
+	}
+	if _, ok := created["embedding"]; ok {
+		t.Errorf("the embedding must not be exposed: %s", w.Body)
+	}
+	id := created["id"].(string)
+
+	w = e.do("GET", path, "", eng)
+	var list []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &list); w.Code != http.StatusOK || err != nil || len(list) != 1 {
+		t.Errorf("list status = %d, body %s", w.Code, w.Body)
+	}
+	if w := e.do("GET", "/api/services/otro/runbooks", "", eng); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Errorf("other service list = %d %s, want 200 []", w.Code, w.Body)
+	}
+
+	if w := e.do("PUT", "/api/runbooks/"+id, `{"title":"Pool agotado","content":"Paso 2"}`, eng); w.Code != http.StatusForbidden {
+		t.Errorf("ingeniero update status = %d, want 403", w.Code)
+	}
+	if w := e.do("PUT", "/api/runbooks/"+id, `{"title":"Pool agotado","content":"Paso 2"}`, admin); w.Code != http.StatusOK {
+		t.Errorf("update status = %d, body %s", w.Code, w.Body)
+	}
+	if w := e.do("PUT", "/api/runbooks/nope", body, admin); w.Code != http.StatusNotFound {
+		t.Errorf("update unknown status = %d, want 404", w.Code)
+	}
+	if w := e.do("DELETE", "/api/runbooks/"+id, "", oncall); w.Code != http.StatusForbidden {
+		t.Errorf("oncall delete status = %d, want 403", w.Code)
+	}
+	if w := e.do("DELETE", "/api/runbooks/"+id, "", admin); w.Code != http.StatusNoContent {
+		t.Errorf("delete status = %d, want 204", w.Code)
+	}
+	if w := e.do("DELETE", "/api/runbooks/"+id, "", admin); w.Code != http.StatusNotFound {
+		t.Errorf("second delete status = %d, want 404", w.Code)
 	}
 }

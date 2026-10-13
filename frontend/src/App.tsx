@@ -4,6 +4,7 @@ import { IncidentBoard } from './features/incidents/IncidentBoard'
 import { IncidentDetail } from './features/incidents/IncidentDetail'
 import { DeclareIncidentForm } from './features/incidents/DeclareIncidentForm'
 import { MetricsDashboard } from './features/metrics/MetricsDashboard'
+import { RunbooksPanel } from './features/runbooks/RunbooksPanel'
 import { ServicesPage } from './features/services/ServicesPage'
 
 export default function App() {
@@ -29,6 +30,7 @@ export default function App() {
           )}
           <DeclareIncidentForm />
           <MetricsDashboard />
+          <RunbooksPanel user={user} />
         </main>
       )}
     </AuthGate>
