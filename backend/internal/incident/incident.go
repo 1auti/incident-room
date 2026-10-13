@@ -31,6 +31,7 @@ const (
 	EventSeverityChange EventType = "cambio_severidad"
 	EventAssignment     EventType = "asignacion"
 	EventEscalation     EventType = "escalado"
+	EventPostmortem     EventType = "postmortem"
 )
 
 // Domain errors translated to HTTP by handlers.

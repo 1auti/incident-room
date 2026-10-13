@@ -27,6 +27,7 @@ import (
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/llm"
 	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/postmortem"
 	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
@@ -40,7 +41,11 @@ const (
 	// Embeddings always come from Ollama; 768 dimensions match the runbooks table (UC-07).
 	defaultOllamaURL      = "http://localhost:11434"
 	defaultEmbeddingModel = "nomic-embed-text"
-	shutdownTimeout       = 10 * time.Second
+	// Chat (UC-08, UC-10): Ollama by default; Groq through its OpenAI-compatible API.
+	defaultOllamaChatModel = "llama3.1"
+	defaultGroqURL         = "https://api.groq.com/openai/v1"
+	defaultGroqChatModel   = "llama-3.1-8b-instant"
+	shutdownTimeout        = 10 * time.Second
 )
 
 func main() {
@@ -90,6 +95,15 @@ func run() error {
 		return err
 	}
 	runbookSvc := runbook.NewService(runbook.NewPostgresRepository(pool), embedder, time.Now)
+	chatCfg, err := chatConfigFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	chat, err := chatCfg.build()
+	if err != nil {
+		return err
+	}
+	postmortemSvc := postmortem.NewService(incidentRepo, postmortem.NewPostgresRepository(pool), chat, time.Now)
 
 	if email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && password != "" {
 		if err := userSvc.EnsureAdmin(ctx, email, password); err != nil {
@@ -118,7 +132,7 @@ func run() error {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, runbookSvc, logger), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, runbookSvc, postmortemSvc, logger), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
 
@@ -157,6 +171,54 @@ func runEscalation(ctx context.Context, svc overdueEscalator, interval time.Dura
 			}
 		}
 	}
+}
+
+// chatConfig selects the chat provider (Ollama or Groq) without touching code.
+type chatConfig struct {
+	provider, baseURL, apiKey, model string
+}
+
+// chatConfigFromEnv reads LLM_PROVIDER (ollama by default, or groq) and
+// LLM_MODEL; Ollama uses OLLAMA_URL, Groq needs GROQ_API_KEY and may override
+// LLM_BASE_URL. A missing key or an unknown provider stops the start.
+func chatConfigFromEnv(getenv func(string) string) (chatConfig, error) {
+	switch provider := envOr(getenv, "LLM_PROVIDER", "ollama"); provider {
+	case "ollama":
+		return chatConfig{
+			provider: provider,
+			baseURL:  envOr(getenv, "OLLAMA_URL", defaultOllamaURL),
+			model:    envOr(getenv, "LLM_MODEL", defaultOllamaChatModel),
+		}, nil
+	case "groq":
+		key := getenv("GROQ_API_KEY")
+		if key == "" {
+			return chatConfig{}, errors.New("LLM_PROVIDER=groq requires GROQ_API_KEY")
+		}
+		return chatConfig{
+			provider: provider,
+			baseURL:  envOr(getenv, "LLM_BASE_URL", defaultGroqURL),
+			apiKey:   key,
+			model:    envOr(getenv, "LLM_MODEL", defaultGroqChatModel),
+		}, nil
+	default:
+		return chatConfig{}, fmt.Errorf("LLM_PROVIDER must be ollama or groq, got %q", provider)
+	}
+}
+
+// String hides the API key, so logging the configuration never leaks it.
+func (c chatConfig) String() string {
+	key := ""
+	if c.apiKey != "" {
+		key = "***"
+	}
+	return fmt.Sprintf("{provider:%s baseURL:%s apiKey:%s model:%s}", c.provider, c.baseURL, key, c.model)
+}
+
+func (c chatConfig) build() (*llm.Chat, error) {
+	if c.provider == "groq" {
+		return llm.NewGroqChat(c.baseURL, c.apiKey, c.model)
+	}
+	return llm.NewOllamaChat(c.baseURL, c.model)
 }
 
 // envOr returns the variable name, or fallback when it is unset or empty.

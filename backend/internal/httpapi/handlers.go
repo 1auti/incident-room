@@ -15,6 +15,7 @@ import (
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/postmortem"
 	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
@@ -78,20 +79,29 @@ type Runbooks interface {
 	Delete(ctx context.Context, actor user.User, id string) error
 }
 
+// Postmortems is the postmortem behavior the handlers need.
+type Postmortems interface {
+	Get(ctx context.Context, actor user.User, incidentID string) (postmortem.Postmortem, error)
+	Generate(ctx context.Context, actor user.User, incidentID string) (postmortem.Postmortem, error)
+	Edit(ctx context.Context, actor user.User, incidentID, content string) (postmortem.Postmortem, error)
+	Approve(ctx context.Context, actor user.User, incidentID string) (postmortem.Postmortem, error)
+}
+
 type handlers struct {
-	users     Users
-	auth      Auth
-	services  Services
-	incidents Incidents
-	timeline  Timeline
-	metrics   Metrics
-	runbooks  Runbooks
-	logger    *slog.Logger
+	users       Users
+	auth        Auth
+	services    Services
+	incidents   Incidents
+	timeline    Timeline
+	metrics     Metrics
+	runbooks    Runbooks
+	postmortems Postmortems
+	logger      *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, m Metrics, rb Runbooks, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, metrics: m, runbooks: rb, logger: logger}
+func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, m Metrics, rb Runbooks, pm Postmortems, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, metrics: m, runbooks: rb, postmortems: pm, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
@@ -116,6 +126,12 @@ func New(users Users, authn Auth, services Services, incidents Incidents, tl Tim
 	mux.Handle("PATCH /api/incidents/{id}/severity", requireAuth(http.HandlerFunc(h.changeSeverity)))
 	// Timeline events are append-only (BR-09): no method may touch a single event.
 	mux.Handle("/api/incidents/{id}/timeline/{eventID}", requireAuth(http.HandlerFunc(eventsAreImmutable)))
+	// Every authenticated user reads the postmortem; the service decides who
+	// generates, edits and approves it (BR-11, BR-13).
+	mux.Handle("GET /api/incidents/{id}/postmortem", requireAuth(http.HandlerFunc(h.getPostmortem)))
+	mux.Handle("PUT /api/incidents/{id}/postmortem", requireAuth(http.HandlerFunc(h.editPostmortem)))
+	mux.Handle("POST /api/incidents/{id}/postmortem/generate", requireAuth(http.HandlerFunc(h.generatePostmortem)))
+	mux.Handle("POST /api/incidents/{id}/postmortem/approve", requireAuth(http.HandlerFunc(h.approvePostmortem)))
 	// Every authenticated user reads runbooks; the service lets only the admin manage them (BR-10, BR-12).
 	mux.Handle("GET /api/services/{id}/runbooks", requireAuth(http.HandlerFunc(h.listRunbooks)))
 	mux.Handle("POST /api/services/{id}/runbooks", requireAuth(http.HandlerFunc(h.createRunbook)))
@@ -365,6 +381,52 @@ func eventsAreImmutable(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "timeline events are append-only")
 }
 
+func (h *handlers) getPostmortem(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	pm, err := h.postmortems.Get(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pm)
+}
+
+func (h *handlers) generatePostmortem(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	pm, err := h.postmortems.Generate(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pm)
+}
+
+func (h *handlers) editPostmortem(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Content string `json:"content"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	pm, err := h.postmortems.Edit(r.Context(), actor, r.PathValue("id"), in.Content)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pm)
+}
+
+func (h *handlers) approvePostmortem(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	pm, err := h.postmortems.Approve(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pm)
+}
+
 type runbookInput struct {
 	Title   string `json:"title"`
 	Content string `json:"content"`
@@ -551,6 +613,22 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "incident not found")
 	case errors.Is(err, incident.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid state transition")
+	case errors.Is(err, postmortem.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, postmortem.ErrNotFound):
+		writeError(w, http.StatusNotFound, "postmortem not found")
+	case errors.Is(err, postmortem.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid postmortem: content is required")
+	case errors.Is(err, postmortem.ErrIncidentNotResolved):
+		writeError(w, http.StatusConflict, "the postmortem can only be generated with the incident resuelto")
+	case errors.Is(err, postmortem.ErrApproved):
+		writeError(w, http.StatusConflict, "the postmortem is approved and can no longer change")
+	case errors.Is(err, postmortem.ErrConflict):
+		writeError(w, http.StatusConflict, "the postmortem changed meanwhile: reload and retry")
+	case errors.Is(err, postmortem.ErrGeneration):
+		// The cause (provider down, empty answer) is for the operator, not the client.
+		h.logger.Error("postmortem generation failed", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "LLM unavailable: the postmortem was not generated")
 	case errors.Is(err, runbook.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid runbook: title and content are required")
 	case errors.Is(err, runbook.ErrForbidden):
