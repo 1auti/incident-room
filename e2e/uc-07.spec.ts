@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { loginUi as uiLogin, openRunbooks } from './helpers'
 import pg from 'pg'
 
 // Embeddings come from fake-ollama.mjs (deterministic per text). The stored embedding is read
@@ -85,10 +86,8 @@ async function embeddingOf(id: string): Promise<string | null> {
 }
 
 async function loginUi(page: Page, email: string, pass: string): Promise<void> {
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(email)
-  await page.getByTestId('login-password').fill(pass)
-  await page.getByTestId('login-submit').click()
+  await uiLogin(page, email, pass)
+  await openRunbooks(page)
   await expect(page.getByTestId('runbooks-panel')).toBeVisible()
 }
 

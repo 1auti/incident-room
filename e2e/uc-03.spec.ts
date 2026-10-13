@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { goTo, loginUi as uiLogin } from './helpers'
 import pg from 'pg'
 
 // DEBT: the states beyond "declarado" are seeded with SQL straight into the e2e database
@@ -114,10 +115,8 @@ async function seedExpired(ctx: APIRequestContext, id: string): Promise<void> {
 }
 
 async function loginUi(page: Page, email: string): Promise<void> {
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(email)
-  await page.getByTestId('login-password').fill('password-e2e')
-  await page.getByTestId('login-submit').click()
+  await uiLogin(page, email, 'password-e2e')
+  await goTo(page, 'incidents')
   await expect(page.getByTestId('incident-board')).toBeVisible()
 }
 

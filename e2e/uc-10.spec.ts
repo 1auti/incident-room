@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { loginUi as uiLogin, openCopilot } from './helpers'
 import pg from 'pg'
 
 // The copilot's model and embeddings are fake-ollama.mjs: a rule-based stand-in that picks tools by
@@ -129,10 +130,8 @@ async function seedState(id: string, state: string): Promise<void> {
 }
 
 async function loginUi(page: Page, email: string, pass: string): Promise<void> {
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(email)
-  await page.getByTestId('login-password').fill(pass)
-  await page.getByTestId('login-submit').click()
+  await uiLogin(page, email, pass)
+  await openCopilot(page)
   await expect(page.getByTestId('copilot-panel')).toBeVisible()
 }
 

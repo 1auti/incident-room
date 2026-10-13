@@ -1,5 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { goTo, loginUi as uiLogin } from './helpers'
 import pg from 'pg'
 
 // MTTR and SLA compliance are global, and the other specs declare incidents at the real "now" in
@@ -126,10 +127,8 @@ function countOf(d: DashboardDto, serviceId: string): number | undefined {
 }
 
 async function loginUi(page: Page, email: string, pass: string): Promise<void> {
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(email)
-  await page.getByTestId('login-password').fill(pass)
-  await page.getByTestId('login-submit').click()
+  await uiLogin(page, email, pass)
+  await goTo(page, 'metrics')
   await expect(page.getByTestId('metrics-dashboard')).toBeVisible()
 }
 

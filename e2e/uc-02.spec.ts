@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { loginUi, openDeclare } from './helpers'
 
 // UC-02.5 "no se crea el incidente ni ningún evento" is not observable in e2e: there is no
 // endpoint to list incidents or timeline events yet. The backend covers it with
@@ -102,10 +103,8 @@ async function loginAsEngineerUi(
   admin: APIRequestContext,
 ): Promise<UserDto> {
   const { email, user } = await registerUser(playwright, baseURL, admin, 'ingeniero')
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(email)
-  await page.getByTestId('login-password').fill('password-e2e')
-  await page.getByTestId('login-submit').click()
+  await loginUi(page, email, 'password-e2e')
+  await openDeclare(page)
   await expect(page.getByTestId('declare-incident-form')).toBeVisible()
   return user
 }
