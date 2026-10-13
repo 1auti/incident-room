@@ -18,7 +18,7 @@ Redesign the frontend: dark blue/white theme, app shell with sidebar and topbar,
 ## Tasks
 - [x] R1 Dark theme
 - [x] R2 Shell, navigation, Modal/Drawer
-- [ ] R3 KPI dashboard
+- [x] R3 KPI dashboard
 - [ ] R4 Views (Incidents, Services, Metrics)
 - [ ] R5 Declare modal + Runbooks/Copilot drawers
 - [ ] R6 e2e helpers + KPI spec
@@ -28,7 +28,8 @@ Redesign the frontend: dark blue/white theme, app shell with sidebar and topbar,
 Delegated direct: one `builder` per task group (writer trigger).
 
 ## Progress / evidence
-R1-R2 via builder: make verify exit 0 (builder report). e2e intentionally not run (navigation adapted in R6).
+R1-R2 via builder: make verify exit 0 (builder report).
+R3: vitest 3/3 and make verify green (builder report); wired in App.tsx by orchestrator (tsc ok). e2e intentionally not run (navigation adapted in R6).
 
 ## Next step
 R3 (running in background), then R4-R5 wiring.

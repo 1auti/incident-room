@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AuthGate } from './features/auth/AuthGate'
 import { CopilotPanel } from './features/copilot/CopilotPanel'
+import { KpiDashboard } from './features/dashboard/KpiDashboard'
 import { IncidentBoard } from './features/incidents/IncidentBoard'
 import { IncidentDetail } from './features/incidents/IncidentDetail'
 import { DeclareIncidentForm } from './features/incidents/DeclareIncidentForm'
@@ -9,7 +10,6 @@ import { RunbooksPanel } from './features/runbooks/RunbooksPanel'
 import { ServicesPage } from './features/services/ServicesPage'
 import { AppShell } from './shell/AppShell'
 import { useView } from './shell/useView'
-import { Card } from './ui/Card'
 import { Drawer } from './ui/Drawer'
 import { Modal } from './ui/Modal'
 
@@ -31,9 +31,13 @@ export default function App() {
           onOpenCopilot={() => setCopilotOpen(true)}
         >
           {view === 'dashboard' && (
-            <Card title="Dashboard" data-testid="kpi-dashboard-placeholder">
-              <p className="text-sm">Resumen de incidentes próximamente.</p>
-            </Card>
+            <KpiDashboard
+              user={user}
+              onOpenIncident={(id) => {
+                setSelectedIncidentId(id)
+                setView('incidents')
+              }}
+            />
           )}
           {view === 'incidents' && (
             <div className="grid gap-4 lg:grid-cols-2">
