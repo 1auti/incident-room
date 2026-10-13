@@ -7,6 +7,10 @@ import {
   getPostmortem,
   type Postmortem,
 } from '../../api/postmortems'
+import { Alert } from '../../ui/Alert'
+import { Badge } from '../../ui/Badge'
+import { Button } from '../../ui/Button'
+import { controlClass } from '../../ui/Field'
 
 interface Props {
   incidentId: string
@@ -68,18 +72,21 @@ export function PostmortemSection({ incidentId, onEvent }: Props) {
   const editable = postmortem?.status !== 'aprobado'
 
   return (
-    <section data-testid="postmortem">
+    <section data-testid="postmortem" className="mt-4 flex flex-col gap-2">
       <h3>Postmortem</h3>
       {!loaded && error === null && <p role="status">Cargando...</p>}
       {error && (
-        <p role="alert" data-testid="postmortem-error">
+        <Alert role="alert" data-testid="postmortem-error">
           {error}
-        </p>
+        </Alert>
       )}
       {loaded && postmortem === null && <p data-testid="postmortem-empty">Este incidente no tiene postmortem.</p>}
       {postmortem && (
         <p>
-          Estado: <span data-testid="postmortem-status">{postmortem.status}</span>
+          Estado:{' '}
+          <Badge tone={postmortem.status === 'aprobado' ? 'success' : 'neutral'} data-testid="postmortem-status">
+            {postmortem.status}
+          </Badge>
           {postmortem.approved_at !== null && (
             <>
               {' '}
@@ -94,37 +101,39 @@ export function PostmortemSection({ incidentId, onEvent }: Props) {
           value={draft}
           readOnly={!editable}
           rows={16}
+          className={`${controlClass} font-mono`}
           onChange={(e) => setDraft(e.target.value)}
         />
       )}
       {loaded && editable && (
-        <div>
-          <button
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
             type="button"
             data-testid="postmortem-generate"
             disabled={busy}
             onClick={() => void run(() => generatePostmortem(incidentId), true)}
           >
             {postmortem === null ? 'Generar borrador' : 'Regenerar borrador'}
-          </button>
+          </Button>
           {postmortem && (
             <>
-              <button
+              <Button
                 type="button"
+                variant="secondary"
                 data-testid="postmortem-save"
                 disabled={busy}
                 onClick={() => void run(() => editPostmortem(incidentId, draft), false)}
               >
                 Guardar
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 data-testid="postmortem-approve"
                 disabled={busy}
                 onClick={() => void run(() => approvePostmortem(incidentId), true)}
               >
                 Aprobar
-              </button>
+              </Button>
             </>
           )}
           {busy && <span role="status">Procesando...</span>}

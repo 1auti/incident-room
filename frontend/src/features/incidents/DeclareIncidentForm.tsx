@@ -1,6 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { declareIncident, suggestSeverity, type DeclareResult, type Impact, type Severity } from '../../api/incidents'
 import { listServices, type Service } from '../../api/services'
+import { Alert } from '../../ui/Alert'
+import { Badge } from '../../ui/Badge'
+import { Button } from '../../ui/Button'
+import { Card } from '../../ui/Card'
+import { Field, controlClass } from '../../ui/Field'
+import { severityTone, stateTone } from './tones'
 
 const impacts: Impact[] = ['caida_total', 'degradacion', 'menor']
 const severities: Severity[] = ['SEV1', 'SEV2', 'SEV3']
@@ -78,24 +84,34 @@ export function DeclareIncidentForm() {
   const declared = result?.incident
 
   return (
-    <section>
-      <h2>Declarar incidente</h2>
-      <form data-testid="declare-incident-form" onSubmit={(e) => void submit(e)}>
-        <label>
+    <Card title="Declarar incidente">
+      <form data-testid="declare-incident-form" onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
+        <Field>
           Título
-          <input data-testid="incident-title-input" value={title} onChange={(e) => setTitle(e.target.value)} />
-        </label>
-        <label>
+          <input
+            data-testid="incident-title-input"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className={controlClass}
+          />
+        </Field>
+        <Field>
           Descripción
           <textarea
             data-testid="incident-description-input"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            className={controlClass}
           />
-        </label>
-        <label>
+        </Field>
+        <Field>
           Servicio
-          <select data-testid="incident-service-select" value={serviceId} onChange={(e) => changeService(e.target.value)}>
+          <select
+            data-testid="incident-service-select"
+            value={serviceId}
+            onChange={(e) => changeService(e.target.value)}
+            className={controlClass}
+          >
             <option value="">Elegí un servicio</option>
             {services.map((s) => (
               <option key={s.id} value={s.id}>
@@ -103,13 +119,14 @@ export function DeclareIncidentForm() {
               </option>
             ))}
           </select>
-        </label>
-        <label>
+        </Field>
+        <Field>
           Impacto
           <select
             data-testid="incident-impact-select"
             value={impact}
             onChange={(e) => changeImpact(e.target.value as Impact | '')}
+            className={controlClass}
           >
             <option value="">Elegí un impacto</option>
             {impacts.map((i) => (
@@ -118,16 +135,20 @@ export function DeclareIncidentForm() {
               </option>
             ))}
           </select>
-        </label>
-        <p>
-          Severidad sugerida: <span data-testid="incident-suggested-severity">{suggested}</span>
+        </Field>
+        <p className="text-sm">
+          Severidad sugerida:{' '}
+          <span data-testid="incident-suggested-severity" className="font-semibold">
+            {suggested}
+          </span>
         </p>
-        <label>
+        <Field>
           Severidad
           <select
             data-testid="incident-severity-select"
             value={severity}
             onChange={(e) => setSeverity(e.target.value as Severity | '')}
+            className={controlClass}
           >
             <option value="">Usar la sugerida</option>
             {severities.map((s) => (
@@ -136,23 +157,38 @@ export function DeclareIncidentForm() {
               </option>
             ))}
           </select>
-        </label>
-        <button data-testid="incident-declare-submit" type="submit">Declarar incidente</button>
+        </Field>
+        <Button data-testid="incident-declare-submit" type="submit">
+          Declarar incidente
+        </Button>
       </form>
-      {error && <p role="alert" data-testid="declare-error">{error}</p>}
+      {error && (
+        <Alert role="alert" data-testid="declare-error" className="mt-3">
+          {error}
+        </Alert>
+      )}
       {result && declared && (
-        <div data-testid="declared-incident">
+        <div
+          data-testid="declared-incident"
+          className="mt-3 flex flex-col gap-1 border-t border-slate-200 pt-3 dark:border-slate-700"
+        >
           <h3>{declared.title}</h3>
           <p>
-            Estado: <span data-testid="incident-state">{declared.state}</span>
+            Estado:{' '}
+            <Badge tone={stateTone[declared.state]} data-testid="incident-state">
+              {declared.state}
+            </Badge>
           </p>
           <p>
-            Severidad: <span data-testid="incident-severity">{declared.severity}</span>
+            Severidad:{' '}
+            <Badge tone={severityTone[declared.severity]} data-testid="incident-severity">
+              {declared.severity}
+            </Badge>
           </p>
           <p>
             Asignado a: <span data-testid="incident-assigned-to">{declared.assigned_to ?? 'Sin asignar'}</span>
           </p>
-          <ul>
+          <ul className="list-disc pl-5 text-sm">
             {result.timeline.map((ev) => (
               <li key={ev.id} data-testid="timeline-event" data-event-type={ev.type}>
                 {ev.type}
@@ -161,6 +197,6 @@ export function DeclareIncidentForm() {
           </ul>
         </div>
       )}
-    </section>
+    </Card>
   )
 }
