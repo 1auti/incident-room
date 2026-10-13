@@ -130,3 +130,28 @@ Una entrada por iteración relevante. Es la materia prima del README.
     - los tests Go, SQL incluidos, pasan contra un Postgres 16 local descartable;
     - la suite e2e completa da 37 passed en tres corridas.
 - **Ajuste a las reglas de contexto:** ninguno.
+
+### 2026-10-13 — UC-06 — Transiciones de estado T2–T4
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Si" al plan de UC-06; el usuario eligió la opción A: crear ya la tabla `postmortems`
+- **Qué propuso el agente:**
+  - **Migración `0006`:** agrega `root_cause`, `resolved_at` y `closed_at` a `incidents`, y crea la tabla `postmortems` con el esquema de `docs/domain.md`: `incident_id` único, sin cascade, y un CHECK que exige `approved_by` y `approved_at` cuando el estado es `aprobado`. UC-06 solo la lee; generar y aprobar postmortems llega con UC-08.
+  - **Transiciones:** el `map transitions` completa T1–T4 y todo sigue pasando por `Transition`, que ahora recibe `rootCause`. T3 recorta la causa y, si queda vacía, devuelve `ErrRootCauseRequired` (400). T4 de un SEV1 sin postmortem aprobado devuelve `ErrPostmortemRequired` (409).
+  - **Repositorio:** `UpdateState` recibe un `StateUpdate` con los campos opcionales y sigue siendo un UPDATE condicional más el evento en una sola transacción. El `cambio_estado` de T3 lleva la causa raíz en `body`.
+  - **UI:** una acción por estado (Acknowledge, Mitigar, Resolver con causa raíz y Cerrar) y se muestran `root_cause`, `resolved_at` y `closed_at`.
+- **Qué falló y qué capa lo detectó:**
+  - (1) Una segunda corrida de e2e dio 37 fallas porque reutilicé la base con un `ADMIN_EMAIL` nuevo: `EnsureAdmin` no crea un segundo admin (BR-19). El error fue mío al armar la corrida, no del código; `make e2e` siempre usa una base limpia. Lo detectó la corrida.
+  - (2) El `reviewer` no halló bloqueantes, pero sí un bug real: `IncidentDetail` se montaba sin `key` y la causa raíz escrita en un incidente quedaba en el textarea al abrir otro, donde "Resolver" la habría guardado.
+  - (3) El `reviewer` marcó además estas mejoras:
+    - se mandaba `root_cause` en todas las transiciones;
+    - a `TestBR05_TransicionesUsanRelojInyectable` le faltaba verificar la cantidad de eventos;
+    - los tests de UC-04 `TestBR08_TransicionesInvalidasSeRechazan` y `TestBR11_OncallAjenoNoReconoce` se superponían con los nuevos del spec;
+    - se guarda la causa raíz recortada, algo que BR-06 no pide explícitamente.
+- **Corrección / decisión:**
+  - (1) Las corridas siguientes usan una base recreada.
+  - (2) `key={selectedIncidentId}` en `App.tsx`.
+  - (3) `root_cause` solo se envía con `to === 'resuelto'` y se agregó el chequeo de cantidad de eventos.
+  - (3) Los dos tests viejos se fusionaron en los del spec: `ErrNotFound` pasó a `TestBR08_IncidenteInexistente` y T1 a la lista de pasos de BR-11.
+  - (3) El recorte de la causa raíz se mantiene, por el mismo criterio que las notas de UC-05; queda para que el usuario lo confirme.
+  - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan contra Postgres 16; la suite e2e da 43 passed en tres corridas con la base limpia.
+- **Ajuste a las reglas de contexto:** ninguno.

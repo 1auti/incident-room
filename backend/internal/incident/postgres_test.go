@@ -266,7 +266,7 @@ func TestPostgres_TransicionFijaAcknowledgedAtYEvento(t *testing.T) {
 
 	at := declared.Add(14*time.Minute + 59*time.Second)
 	ev := incident.TimelineEvent{Type: incident.EventStateChange, AuthorID: &s.userID, Data: map[string]string{"from": "declarado", "to": "reconocido"}, OccurredAt: at}
-	updated, err := repo.UpdateState(c, id, incident.StateDeclared, incident.StateAcknowledged, &at, ev)
+	updated, err := repo.UpdateState(c, id, incident.StateDeclared, incident.StateAcknowledged, incident.StateUpdate{AcknowledgedAt: &at}, ev)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,16 +281,16 @@ func TestPostgres_TransicionFijaAcknowledgedAtYEvento(t *testing.T) {
 	}
 
 	// The incident is no longer declarado: the conditional update touches nothing.
-	if _, err := repo.UpdateState(c, id, incident.StateDeclared, incident.StateAcknowledged, &at, ev); !errors.Is(err, incident.ErrInvalidTransition) {
+	if _, err := repo.UpdateState(c, id, incident.StateDeclared, incident.StateAcknowledged, incident.StateUpdate{AcknowledgedAt: &at}, ev); !errors.Is(err, incident.ErrInvalidTransition) {
 		t.Errorf("second UpdateState err = %v, want ErrInvalidTransition", err)
 	}
 	if n := countEvents(t, pool, id, incident.EventStateChange); n != 1 {
 		t.Errorf("cambio_estado events = %d, want 1 (rolled back)", n)
 	}
-	if _, err := repo.UpdateState(c, "00000000-0000-0000-0000-000000000000", incident.StateDeclared, incident.StateAcknowledged, &at, ev); !errors.Is(err, incident.ErrNotFound) {
+	if _, err := repo.UpdateState(c, "00000000-0000-0000-0000-000000000000", incident.StateDeclared, incident.StateAcknowledged, incident.StateUpdate{AcknowledgedAt: &at}, ev); !errors.Is(err, incident.ErrNotFound) {
 		t.Errorf("unknown id err = %v, want ErrNotFound", err)
 	}
-	if _, err := repo.UpdateState(c, "nope", incident.StateDeclared, incident.StateAcknowledged, &at, ev); !errors.Is(err, incident.ErrNotFound) {
+	if _, err := repo.UpdateState(c, "nope", incident.StateDeclared, incident.StateAcknowledged, incident.StateUpdate{AcknowledgedAt: &at}, ev); !errors.Is(err, incident.ErrNotFound) {
 		t.Errorf("malformed id err = %v, want ErrNotFound", err)
 	}
 }
@@ -422,5 +422,87 @@ func TestPostgres_CambioSeveridadEsCondicional(t *testing.T) {
 		if _, err := repo.ChangeSeverity(c, bad, incident.SeveritySEV2, incident.SeveritySEV1, mutable, ev); !errors.Is(err, incident.ErrNotFound) {
 			t.Errorf("ChangeSeverity %q err = %v, want ErrNotFound", bad, err)
 		}
+	}
+}
+
+func TestPostgres_ResolverYCerrarGuardanCamposYEvento(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := incident.NewPostgresRepository(pool)
+	s := seedBase(t, pool)
+	declared := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	id := insertIncident(t, pool, s, incident.StateMitigating, incident.SeveritySEV2, declared)
+
+	resolvedAt, cause := declared.Add(40*time.Minute), "Pool de conexiones agotado por fuga en v2.3"
+	ev := incident.TimelineEvent{Type: incident.EventStateChange, AuthorID: &s.userID, Body: cause,
+		Data: map[string]string{"from": "mitigando", "to": "resuelto"}, OccurredAt: resolvedAt}
+	got, err := repo.UpdateState(c, id, incident.StateMitigating, incident.StateResolved,
+		incident.StateUpdate{ResolvedAt: &resolvedAt, RootCause: &cause}, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != incident.StateResolved || got.RootCause == nil || *got.RootCause != cause ||
+		got.ResolvedAt == nil || !got.ResolvedAt.Equal(resolvedAt) || got.ResolvedAt.Location() != time.UTC || got.ClosedAt != nil {
+		t.Errorf("resolved = %+v", got)
+	}
+	var body string
+	if err := pool.QueryRow(c, `SELECT body FROM timeline_events WHERE incident_id = $1 AND type = 'cambio_estado'`, id).Scan(&body); err != nil || body != cause {
+		t.Errorf("cambio_estado body = %q, %v", body, err)
+	}
+
+	// T4 leaves root_cause and resolved_at as they were (nil fields are untouched).
+	closedAt := declared.Add(2 * time.Hour)
+	ev.Body, ev.Data, ev.OccurredAt = "", map[string]string{"from": "resuelto", "to": "cerrado"}, closedAt
+	got, err = repo.UpdateState(c, id, incident.StateResolved, incident.StateClosed, incident.StateUpdate{ClosedAt: &closedAt}, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != incident.StateClosed || got.ClosedAt == nil || !got.ClosedAt.Equal(closedAt) ||
+		got.RootCause == nil || *got.RootCause != cause || got.ResolvedAt == nil || !got.ResolvedAt.Equal(resolvedAt) {
+		t.Errorf("closed = %+v", got)
+	}
+	if n := countEvents(t, pool, id, incident.EventStateChange); n != 2 {
+		t.Errorf("cambio_estado events = %d, want 2", n)
+	}
+}
+
+func TestPostgres_PostmortemAprobado(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := incident.NewPostgresRepository(pool)
+	s := seedBase(t, pool)
+	declared := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	insertPostmortem := func(incidentID, status string) {
+		t.Helper()
+		var approvedBy *string
+		var approvedAt *time.Time
+		if status == "aprobado" {
+			approvedBy, approvedAt = &s.userID, &declared
+		}
+		if _, err := pool.Exec(c, `INSERT INTO postmortems (incident_id, content, status, generated_by_llm, approved_by, approved_at, updated_at)
+			VALUES ($1, 'pm', $2, true, $3, $4, $5)`, incidentID, status, approvedBy, approvedAt, declared); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	none := insertIncident(t, pool, s, incident.StateResolved, incident.SeveritySEV1, declared)
+	draft := insertIncident(t, pool, s, incident.StateResolved, incident.SeveritySEV1, declared)
+	approved := insertIncident(t, pool, s, incident.StateResolved, incident.SeveritySEV1, declared)
+	insertPostmortem(draft, "borrador")
+	insertPostmortem(approved, "aprobado")
+
+	for id, want := range map[string]bool{none: false, draft: false, approved: true} {
+		if got, err := repo.HasApprovedPostmortem(c, id); err != nil || got != want {
+			t.Errorf("HasApprovedPostmortem(%s) = %v, %v; want %v", id, got, err, want)
+		}
+	}
+	// At most one postmortem per incident (BR-13) and an approved one records who and when.
+	if _, err := pool.Exec(c, `INSERT INTO postmortems (incident_id, content, status, generated_by_llm, updated_at)
+		VALUES ($1, 'otro', 'borrador', true, $2)`, draft, declared); err == nil {
+		t.Error("second postmortem for the same incident was accepted")
+	}
+	if _, err := pool.Exec(c, `INSERT INTO postmortems (incident_id, content, status, generated_by_llm, updated_at)
+		VALUES ($1, 'pm', 'aprobado', true, $2)`, none, declared); err == nil {
+		t.Error("approved postmortem without approved_by/approved_at was accepted")
 	}
 }

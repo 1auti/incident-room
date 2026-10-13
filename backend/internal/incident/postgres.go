@@ -16,7 +16,7 @@ const (
 	pgInvalidTextRepresen = "22P02"
 	serviceFKName         = "incidents_service_id_fkey"
 	incidentColumns       = `id, title, description, service_id, impact, suggested_severity, severity, state,
-		declared_by, assigned_to, declared_at, acknowledged_at, escalated_at`
+		declared_by, assigned_to, declared_at, acknowledged_at, escalated_at, root_cause, resolved_at, closed_at`
 )
 
 // PostgresRepository implements Repository on Postgres.
@@ -195,15 +195,18 @@ func (r *PostgresRepository) Escalate(ctx context.Context, inc Incident, ev Time
 // storing ev. The update is conditional on the current state; when no row
 // matches, the incident either does not exist (ErrNotFound) or changed state
 // meanwhile (ErrInvalidTransition).
-func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, to State, ackAt *time.Time, ev TimelineEvent) (Incident, error) {
+func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, to State, upd StateUpdate, ev TimelineEvent) (Incident, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return Incident{}, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	inc, err := scanIncident(tx.QueryRow(ctx, `UPDATE incidents SET state = $1, acknowledged_at = COALESCE($2, acknowledged_at)
-		WHERE id = $3 AND state = $4 RETURNING `+incidentColumns, string(to), ackAt, id, string(from)))
+	inc, err := scanIncident(tx.QueryRow(ctx, `UPDATE incidents SET state = $1,
+			acknowledged_at = COALESCE($2, acknowledged_at), resolved_at = COALESCE($3, resolved_at),
+			closed_at = COALESCE($4, closed_at), root_cause = COALESCE($5, root_cause)
+		WHERE id = $6 AND state = $7 RETURNING `+incidentColumns,
+		string(to), upd.AcknowledgedAt, upd.ResolvedAt, upd.ClosedAt, upd.RootCause, id, string(from)))
 	if pgErrCode(err) == pgInvalidTextRepresen {
 		return Incident{}, ErrNotFound
 	}
@@ -227,6 +230,17 @@ func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, t
 		return Incident{}, fmt.Errorf("commit: %w", err)
 	}
 	return inc, nil
+}
+
+// HasApprovedPostmortem reports whether the incident has an approved postmortem.
+func (r *PostgresRepository) HasApprovedPostmortem(ctx context.Context, incidentID string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM postmortems WHERE incident_id = $1 AND status = 'aprobado')`,
+		incidentID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check postmortem: %w", err)
+	}
+	return ok, nil
 }
 
 // ListEvents returns the timeline of an incident in chronological order by
@@ -357,13 +371,16 @@ func scanIncident(row pgx.Row) (Incident, error) {
 	var inc Incident
 	var impact, suggested, severity, state string
 	if err := row.Scan(&inc.ID, &inc.Title, &inc.Description, &inc.ServiceID, &impact, &suggested, &severity, &state,
-		&inc.DeclaredBy, &inc.AssignedTo, &inc.DeclaredAt, &inc.AcknowledgedAt, &inc.EscalatedAt); err != nil {
+		&inc.DeclaredBy, &inc.AssignedTo, &inc.DeclaredAt, &inc.AcknowledgedAt, &inc.EscalatedAt,
+		&inc.RootCause, &inc.ResolvedAt, &inc.ClosedAt); err != nil {
 		return Incident{}, err
 	}
 	inc.Impact, inc.SuggestedSeverity, inc.Severity, inc.State = Impact(impact), Severity(suggested), Severity(severity), State(state)
 	inc.DeclaredAt = inc.DeclaredAt.UTC()
 	inc.AcknowledgedAt = utcPtr(inc.AcknowledgedAt)
 	inc.EscalatedAt = utcPtr(inc.EscalatedAt)
+	inc.ResolvedAt = utcPtr(inc.ResolvedAt)
+	inc.ClosedAt = utcPtr(inc.ClosedAt)
 	return inc, nil
 }
 

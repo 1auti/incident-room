@@ -281,7 +281,11 @@ func (f *fakeIncidentRepo) Escalate(context.Context, incident.Incident, incident
 	return false, nil
 }
 
-func (f *fakeIncidentRepo) UpdateState(_ context.Context, id string, from, to incident.State, ackAt *time.Time, ev incident.TimelineEvent) (incident.Incident, error) {
+func (f *fakeIncidentRepo) HasApprovedPostmortem(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeIncidentRepo) UpdateState(_ context.Context, id string, from, to incident.State, upd incident.StateUpdate, ev incident.TimelineEvent) (incident.Incident, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.incidents {
@@ -292,7 +296,15 @@ func (f *fakeIncidentRepo) UpdateState(_ context.Context, id string, from, to in
 			return incident.Incident{}, incident.ErrInvalidTransition
 		}
 		f.incidents[i].State = to
-		f.incidents[i].AcknowledgedAt = ackAt
+		if upd.AcknowledgedAt != nil {
+			f.incidents[i].AcknowledgedAt = upd.AcknowledgedAt
+		}
+		if upd.ResolvedAt != nil {
+			f.incidents[i].ResolvedAt, f.incidents[i].RootCause = upd.ResolvedAt, upd.RootCause
+		}
+		if upd.ClosedAt != nil {
+			f.incidents[i].ClosedAt = upd.ClosedAt
+		}
 		ev.IncidentID = id
 		f.events = append(f.events, ev)
 		return f.incidents[i], nil
@@ -1128,5 +1140,38 @@ func TestUC05_CambioSeveridadPorAPI(t *testing.T) {
 	}
 	if e.incidents.incidents[0].Severity != incident.SeveritySEV1 || len(e.incidents.events) != events {
 		t.Errorf("rejected change had effects: %+v", e.incidents.incidents[0])
+	}
+}
+
+func TestUC06_TransicionesPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	id := e.declareOn(t, eng, e.createService(t, admin, "Pagos"))
+	path := "/api/incidents/" + id + "/transitions"
+	step := func(body string, want int) map[string]any {
+		t.Helper()
+		w := e.do("POST", path, body, admin)
+		if w.Code != want {
+			t.Fatalf("%s status = %d, want %d; body %s", body, w.Code, want, w.Body)
+		}
+		var got map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		return got
+	}
+
+	step(`{"to":"reconocido"}`, http.StatusOK)
+	step(`{"to":"mitigando"}`, http.StatusOK)
+	step(`{"to":"resuelto","root_cause":"   "}`, http.StatusBadRequest)
+	got := step(`{"to":"resuelto","root_cause":"Fuga en v2.3"}`, http.StatusOK)
+	if got["root_cause"] != "Fuga en v2.3" || got["resolved_at"] != "2026-10-01T10:00:00Z" {
+		t.Errorf("resolved = %v", got)
+	}
+
+	// A SEV1 without an approved postmortem cannot close (BR-07): the fake has none.
+	e.incidents.incidents[0].Severity = incident.SeveritySEV1
+	step(`{"to":"cerrado"}`, http.StatusConflict)
+	e.incidents.incidents[0].Severity = incident.SeveritySEV3
+	if got := step(`{"to":"cerrado"}`, http.StatusOK); got["state"] != "cerrado" {
+		t.Errorf("closed = %v", got)
 	}
 }

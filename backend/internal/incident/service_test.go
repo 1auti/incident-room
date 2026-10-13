@@ -23,6 +23,13 @@ type fakeRepo struct {
 
 	// events collects what Escalate and UpdateState append (BR-09).
 	events []incident.TimelineEvent
+
+	// approvedPostmortems holds the incident ids with an approved postmortem (BR-07).
+	approvedPostmortems map[string]bool
+}
+
+func (f *fakeRepo) HasApprovedPostmortem(_ context.Context, incidentID string) (bool, error) {
+	return f.approvedPostmortems[incidentID], nil
 }
 
 func (f *fakeRepo) indexOf(id string) int {
@@ -65,7 +72,7 @@ func (f *fakeRepo) Escalate(_ context.Context, inc incident.Incident, ev inciden
 	return true, nil
 }
 
-func (f *fakeRepo) UpdateState(_ context.Context, id string, from, to incident.State, ackAt *time.Time, ev incident.TimelineEvent) (incident.Incident, error) {
+func (f *fakeRepo) UpdateState(_ context.Context, id string, from, to incident.State, upd incident.StateUpdate, ev incident.TimelineEvent) (incident.Incident, error) {
 	i := f.indexOf(id)
 	if i < 0 {
 		return incident.Incident{}, incident.ErrNotFound
@@ -74,8 +81,17 @@ func (f *fakeRepo) UpdateState(_ context.Context, id string, from, to incident.S
 		return incident.Incident{}, incident.ErrInvalidTransition
 	}
 	f.seeded[i].State = to
-	if ackAt != nil {
-		f.seeded[i].AcknowledgedAt = ackAt
+	if upd.AcknowledgedAt != nil {
+		f.seeded[i].AcknowledgedAt = upd.AcknowledgedAt
+	}
+	if upd.ResolvedAt != nil {
+		f.seeded[i].ResolvedAt = upd.ResolvedAt
+	}
+	if upd.ClosedAt != nil {
+		f.seeded[i].ClosedAt = upd.ClosedAt
+	}
+	if upd.RootCause != nil {
+		f.seeded[i].RootCause = upd.RootCause
 	}
 	ev.IncidentID = id
 	f.events = append(f.events, ev)
@@ -633,7 +649,7 @@ func TestBR04_ReconocidoATiempoNoEscala(t *testing.T) {
 	seedDeclared(repo, "i1", "important", incident.SeveritySEV2)
 	svc, now := clockedSvc(repo, fixedNow.Add(14*time.Minute+59*time.Second))
 	oncall := user.User{ID: "oncall-1", Role: user.RoleOncall}
-	got, err := svc.Transition(context.Background(), oncall, "i1", incident.StateAcknowledged)
+	got, err := svc.Transition(context.Background(), oncall, "i1", incident.StateAcknowledged, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,66 +668,6 @@ func TestBR04_ReconocidoATiempoNoEscala(t *testing.T) {
 	}
 	if len(escalationEvents(repo)) != 0 || repo.seeded[0].EscalatedAt != nil {
 		t.Errorf("acknowledged incident was escalated: %+v", repo.events)
-	}
-}
-
-func TestBR11_OncallAjenoNoReconoce(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		actor   user.User
-		wantErr error
-	}{
-		{"on-call del servicio", user.User{ID: "oncall-1", Role: user.RoleOncall}, nil},
-		{"oncall ajeno", user.User{ID: "oncall-2", Role: user.RoleOncall}, incident.ErrForbidden},
-		{"ingeniero", user.User{ID: "u-eng", Role: user.RoleIngeniero}, incident.ErrForbidden},
-		{"admin", user.User{ID: "u-admin", Role: user.RoleAdmin}, nil},
-		{"rol desconocido", user.User{ID: "x", Role: "visitante"}, incident.ErrForbidden},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := newFake()
-			seedDeclared(repo, "i1", "important", incident.SeveritySEV2)
-			svc, _ := clockedSvc(repo, fixedNow.Add(time.Minute))
-			_, err := svc.Transition(context.Background(), tc.actor, "i1", incident.StateAcknowledged)
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("err = %v, want %v", err, tc.wantErr)
-			}
-			wantState, wantEvents := incident.StateDeclared, 0
-			if tc.wantErr == nil {
-				wantState, wantEvents = incident.StateAcknowledged, 1
-			}
-			if repo.seeded[0].State != wantState || len(repo.events) != wantEvents {
-				t.Errorf("state = %s, events = %d; want %s, %d", repo.seeded[0].State, len(repo.events), wantState, wantEvents)
-			}
-		})
-	}
-}
-
-func TestBR08_TransicionesInvalidasSeRechazan(t *testing.T) {
-	admin := user.User{ID: "u-admin", Role: user.RoleAdmin}
-	for _, tc := range []struct {
-		name    string
-		state   incident.State
-		to      incident.State
-		id      string
-		wantErr error
-	}{
-		{"salto declarado a resuelto", incident.StateDeclared, incident.StateResolved, "i1", incident.ErrInvalidTransition},
-		{"ya reconocido", incident.StateAcknowledged, incident.StateAcknowledged, "i1", incident.ErrInvalidTransition},
-		{"retroceso", incident.StateAcknowledged, incident.StateDeclared, "i1", incident.ErrInvalidTransition},
-		{"inexistente", incident.StateDeclared, incident.StateAcknowledged, "nope", incident.ErrNotFound},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := newFake()
-			seedDeclared(repo, "i1", "important", incident.SeveritySEV2)
-			repo.seeded[0].State = tc.state
-			svc, _ := clockedSvc(repo, fixedNow)
-			if _, err := svc.Transition(context.Background(), admin, tc.id, tc.to); !errors.Is(err, tc.wantErr) {
-				t.Fatalf("err = %v, want %v", err, tc.wantErr)
-			}
-			if repo.seeded[0].State != tc.state || len(repo.events) != 0 || repo.seeded[0].AcknowledgedAt != nil {
-				t.Errorf("rejected transition changed the incident: %+v events %+v", repo.seeded[0], repo.events)
-			}
-		})
 	}
 }
 

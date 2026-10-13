@@ -52,7 +52,7 @@ type Incidents interface {
 	Declare(ctx context.Context, actor user.User, in incident.DeclareInput) (incident.Incident, []incident.TimelineEvent, error)
 	List(ctx context.Context, actor user.User, f incident.ListFilter) ([]incident.Incident, error)
 	Get(ctx context.Context, actor user.User, id string) (incident.Incident, error)
-	Transition(ctx context.Context, actor user.User, id string, to incident.State) (incident.Incident, error)
+	Transition(ctx context.Context, actor user.User, id string, to incident.State, rootCause string) (incident.Incident, error)
 }
 
 // Timeline is the timeline behavior the handlers need.
@@ -269,7 +269,8 @@ func (h *handlers) getIncident(w http.ResponseWriter, r *http.Request) {
 
 func (h *handlers) transitionIncident(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		To incident.State `json:"to"`
+		To        incident.State `json:"to"`
+		RootCause string         `json:"root_cause"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -279,7 +280,7 @@ func (h *handlers) transitionIncident(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor, _ := auth.UserFromContext(r.Context())
-	inc, err := h.incidents.Transition(r.Context(), actor, r.PathValue("id"), in.To)
+	inc, err := h.incidents.Transition(r.Context(), actor, r.PathValue("id"), in.To, in.RootCause)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -430,6 +431,10 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "incident not found")
 	case errors.Is(err, incident.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid state transition")
+	case errors.Is(err, incident.ErrRootCauseRequired):
+		writeError(w, http.StatusBadRequest, "invalid transition: resolving requires a non-empty root_cause")
+	case errors.Is(err, incident.ErrPostmortemRequired):
+		writeError(w, http.StatusConflict, "a SEV1 incident can only be closed with an approved postmortem")
 	case errors.Is(err, incident.ErrSeverityLocked):
 		writeError(w, http.StatusConflict, "severity can no longer change: the incident is resuelto or cerrado, or its severity changed meanwhile")
 	case errors.Is(err, timeline.ErrInvalid):

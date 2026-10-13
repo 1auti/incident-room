@@ -18,6 +18,9 @@ export interface Incident {
   declared_at: string
   acknowledged_at: string | null
   escalated_at: string | null
+  root_cause: string | null
+  resolved_at: string | null
+  closed_at: string | null
 }
 
 export interface TimelineEvent {
@@ -83,10 +86,11 @@ export async function getIncident(id: string): Promise<Incident> {
   return res
 }
 
-export async function transitionIncident(id: string, to: State): Promise<Incident> {
+// rootCause is only read by the backend when resolving (T3).
+export async function transitionIncident(id: string, to: State, rootCause = ''): Promise<Incident> {
   const res = await request<Incident>(`/api/incidents/${encodeURIComponent(id)}/transitions`, {
     method: 'POST',
-    body: { to },
+    body: { to, root_cause: rootCause },
   })
   if (!res) throw new ApiError(500, 'empty response')
   return res
