@@ -643,7 +643,8 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, copilot.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid message: it must not be empty")
 	case errors.Is(err, copilot.ErrModel):
-		// Checked before runbook.ErrEmbedding: a failed question saves nothing.
+		// Checked before runbook.ErrEmbedding. The copilot only reports ErrModel when
+		// no tool ran yet; after an action it answers 200 with what was done.
 		h.logger.Error("copilot model failed", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "LLM unavailable: the copilot cannot answer right now")
 	case errors.Is(err, postmortem.ErrForbidden):
