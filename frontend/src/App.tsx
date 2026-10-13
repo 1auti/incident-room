@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AuthGate } from './features/auth/AuthGate'
+import { CopilotPanel } from './features/copilot/CopilotPanel'
 import { IncidentBoard } from './features/incidents/IncidentBoard'
 import { IncidentDetail } from './features/incidents/IncidentDetail'
 import { DeclareIncidentForm } from './features/incidents/DeclareIncidentForm'
@@ -31,6 +32,7 @@ export default function App() {
           <DeclareIncidentForm />
           <MetricsDashboard />
           <RunbooksPanel user={user} />
+          <CopilotPanel />
         </main>
       )}
     </AuthGate>

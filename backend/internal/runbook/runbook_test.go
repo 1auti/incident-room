@@ -67,6 +67,24 @@ func (f *fakeRepo) Update(_ context.Context, rb runbook.Runbook, embedding []flo
 	return rb, nil
 }
 
+// Search ranks by the first vector component: enough to exercise the service.
+func (f *fakeRepo) Search(_ context.Context, embedding []float32, k int, minSimilarity float64) ([]runbook.Match, error) {
+	var out []runbook.Match
+	for _, s := range f.rows {
+		sim := 1.0
+		if s.embedding[0] != embedding[0] {
+			sim = 0
+		}
+		if sim >= minSimilarity {
+			out = append(out, runbook.Match{Runbook: s.rb, ServiceName: s.rb.ServiceID, Similarity: sim})
+		}
+	}
+	if len(out) > k {
+		out = out[:k]
+	}
+	return out, nil
+}
+
 func (f *fakeRepo) Delete(_ context.Context, id string) error {
 	if _, ok := f.rows[id]; !ok {
 		return runbook.ErrNotFound
@@ -267,5 +285,33 @@ func TestUC07_ValidacionYFallosDelEmbedding(t *testing.T) {
 	got, err := newSvc(repo, emb).Create(ctx, admin, "payments", "  Pool agotado ", "  Paso 1\n    detalle")
 	if err != nil || got.Title != "Pool agotado" || got.Content != "  Paso 1\n    detalle" || got.CreatedBy != admin.ID || !got.UpdatedAt.Equal(fixedNow) {
 		t.Errorf("created = %+v, %v", got, err)
+	}
+}
+
+func TestRunbook_BuscarParaElCopiloto(t *testing.T) {
+	repo, emb := newFake(), &fakeEmbedder{}
+	rb := seed(t, repo, emb, "payments", "Pool agotado") // content "Paso 1: reiniciar el pool"
+	svc := newSvc(repo, emb)
+
+	// The fake embedder puts len(text) in v[0]: a query of the same length matches.
+	for _, actor := range []user.User{engineer, oncall, admin} {
+		got, err := svc.Search(context.Background(), actor, "Paso 1: reiniciar el pool", 3, 0.5)
+		if err != nil || len(got) != 1 || got[0].ID != rb.ID {
+			t.Errorf("%s: Search = %+v, %v", actor.Role, got, err)
+		}
+	}
+	if _, err := svc.Search(context.Background(), visitor, "x", 3, 0.5); !errors.Is(err, runbook.ErrForbidden) {
+		t.Errorf("visitor err = %v, want ErrForbidden", err)
+	}
+	failing := runbook.NewService(repo, &fakeEmbedder{err: errors.New("down")}, func() time.Time { return fixedNow })
+	if _, err := failing.Search(context.Background(), engineer, "x", 3, 0.5); !errors.Is(err, runbook.ErrEmbedding) {
+		t.Errorf("embedder down err = %v, want ErrEmbedding", err)
+	}
+	// A removed runbook is not found any more (BR-12).
+	if err := svc.Delete(context.Background(), admin, rb.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.Search(context.Background(), engineer, "Paso 1: reiniciar el pool", 3, 0.5); len(got) != 0 {
+		t.Errorf("removed runbook still found: %+v", got)
 	}
 }

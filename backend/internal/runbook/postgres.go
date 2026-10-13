@@ -45,6 +45,31 @@ func (r *PostgresRepository) ListByService(ctx context.Context, serviceID string
 	return list, nil
 }
 
+// Search ranks runbooks by cosine distance (<=>, pgvector); similarity is
+// 1 - distance.
+func (r *PostgresRepository) Search(ctx context.Context, embedding []float32, k int, minSimilarity float64) ([]Match, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT r.id, r.service_id, r.title, r.content, r.created_by, r.updated_at, s.name,
+			1 - (r.embedding OPERATOR(public.<=>) $1::public.vector) AS similarity
+		FROM runbooks r JOIN services s ON s.id = r.service_id
+		WHERE 1 - (r.embedding OPERATOR(public.<=>) $1::public.vector) >= $2
+		ORDER BY r.embedding OPERATOR(public.<=>) $1::public.vector, r.id
+		LIMIT $3`, vectorLiteral(embedding), minSimilarity, k)
+	if err != nil {
+		return nil, fmt.Errorf("search runbooks: %w", err)
+	}
+	matches, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Match, error) {
+		var m Match
+		err := row.Scan(&m.ID, &m.ServiceID, &m.Title, &m.Content, &m.CreatedBy, &m.UpdatedAt, &m.ServiceName, &m.Similarity)
+		m.UpdatedAt = m.UpdatedAt.UTC()
+		return m, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan matches: %w", err)
+	}
+	return matches, nil
+}
+
 // Create stores the runbook and its embedding in one row.
 func (r *PostgresRepository) Create(ctx context.Context, rb Runbook, embedding []float32) (Runbook, error) {
 	created, err := scanRunbook(r.pool.QueryRow(ctx, `

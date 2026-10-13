@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"incident-room-backend/internal/auth"
+	"incident-room-backend/internal/copilot"
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/metrics"
@@ -418,6 +419,10 @@ func (f *fakeRunbookRepo) Update(_ context.Context, rb runbook.Runbook, _ []floa
 	return runbook.Runbook{}, runbook.ErrNotFound
 }
 
+func (f *fakeRunbookRepo) Search(context.Context, []float32, int, float64) ([]runbook.Match, error) {
+	return nil, nil
+}
+
 func (f *fakeRunbookRepo) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -504,6 +509,20 @@ func (f *fakeLLM) Generate(context.Context, string) (string, error) {
 	return "Análisis del incidente", nil
 }
 
+// fakeModel answers every turn with reply, or err when set; the conversation
+// rules are tested in package copilot.
+type fakeModel struct {
+	reply string
+	err   error
+}
+
+func (f *fakeModel) Converse(context.Context, []copilot.Message, []copilot.ToolDef) (copilot.Message, error) {
+	if f.err != nil {
+		return copilot.Message{}, f.err
+	}
+	return copilot.Message{Role: copilot.RoleAssistant, Content: f.reply}, nil
+}
+
 var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 type env struct {
@@ -516,6 +535,7 @@ type env struct {
 	runbooks  *fakeRunbookRepo
 	embedder  *fakeEmbedder
 	llm       *fakeLLM
+	model     *fakeModel
 }
 
 func newEnv(t *testing.T) *env {
@@ -533,8 +553,11 @@ func newEnv(t *testing.T) *env {
 	rs := runbook.NewService(runbooks, embedder, func() time.Time { return fixedNow })
 	llm := &fakeLLM{}
 	ps := postmortem.NewService(incidents, &fakePostmortemRepo{byID: map[string]postmortem.Postmortem{}}, llm, func() time.Time { return fixedNow })
-	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, ms, rs, ps, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents, runbooks: runbooks, embedder: embedder, llm: llm}
+	mgr := service.NewManager(services, users, func() time.Time { return fixedNow })
+	model := &fakeModel{reply: "respuesta"}
+	cs := copilot.NewService(model, rs, is, ts, mgr, copilot.Config{TopK: 3, MinSimilarity: 0.5})
+	h := httpapi.New(us, as, mgr, is, ts, ms, rs, ps, cs, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents, runbooks: runbooks, embedder: embedder, llm: llm, model: model}
 }
 
 func (e *env) do(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -656,6 +679,7 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 		{"POST", "/api/incidents/inc-1/postmortem/generate", ""},
 		{"PUT", "/api/incidents/inc-1/postmortem", `{"content":"x"}`},
 		{"POST", "/api/incidents/inc-1/postmortem/approve", ""},
+		{"POST", "/api/copilot", `{"message":"hola"}`},
 	} {
 		w := e.do(tc.method, tc.path, tc.body, nil)
 		if w.Code != http.StatusUnauthorized {
@@ -1514,5 +1538,35 @@ func TestUC08_PostmortemPorAPI(t *testing.T) {
 		if got := status(tc.method, tc.path, tc.body, admin); got != http.StatusConflict {
 			t.Errorf("%s %s on approved = %d, want 409", tc.method, tc.path, got)
 		}
+	}
+}
+
+func TestUC10_CopilotoPorAPI(t *testing.T) {
+	e := newEnv(t)
+	_, eng, _ := e.cookies(t)
+	for name, body := range map[string]string{"json invalido": `{`, "vacio": `{"message":"  "}`} {
+		if w := e.do("POST", "/api/copilot", body, eng); w.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", name, w.Code)
+		}
+	}
+	// No runbook is relevant here (the fake repository finds none): the fixed reply, never the model's.
+	w := e.do("POST", "/api/copilot", `{"message":"¿cómo reinicio el pool?"}`, eng)
+	var ans map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &ans)
+	if w.Code != http.StatusOK || ans["reply"] != copilot.NoInformation {
+		t.Errorf("ask = %d %s", w.Code, w.Body)
+	}
+	if sources, ok := ans["sources"].([]any); !ok || len(sources) != 0 {
+		t.Errorf("sources = %v, want []", ans["sources"])
+	}
+	e.model.err = errors.New("connection refused")
+	if w := e.do("POST", "/api/copilot", `{"message":"hola"}`, eng); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("model down status = %d, want 503", w.Code)
+	}
+	e.model.err = nil
+	e.embedder.err = errors.New("connection refused")
+	w = e.do("POST", "/api/copilot", `{"message":"hola"}`, eng)
+	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "runbook was not saved") {
+		t.Errorf("embedder down = %d %s, want the copilot's 503", w.Code, w.Body)
 	}
 }

@@ -46,11 +46,11 @@ func TestBR04_IntervaloDeEscaladoPorEntorno(t *testing.T) {
 
 func TestLLM_ProveedorDeChatPorEntorno(t *testing.T) {
 	got, err := chatConfigFromEnv(env(nil))
-	if want := (chatConfig{provider: "ollama", baseURL: "http://localhost:11434", model: "llama3.1"}); err != nil || got != want {
+	if want := (chatConfig{provider: "ollama", baseURL: "http://localhost:11434/v1", apiKey: "ollama", model: "llama3.1"}); err != nil || got != want {
 		t.Errorf("defaults = %+v, %v; want %+v", got, err, want)
 	}
-	got, err = chatConfigFromEnv(env(map[string]string{"OLLAMA_URL": "http://ollama:11434", "LLM_MODEL": "qwen2.5"}))
-	if want := (chatConfig{provider: "ollama", baseURL: "http://ollama:11434", model: "qwen2.5"}); err != nil || got != want {
+	got, err = chatConfigFromEnv(env(map[string]string{"OLLAMA_URL": "http://ollama:11434/", "LLM_MODEL": "qwen2.5"}))
+	if want := (chatConfig{provider: "ollama", baseURL: "http://ollama:11434/v1", apiKey: "ollama", model: "qwen2.5"}); err != nil || got != want {
 		t.Errorf("ollama overrides = %+v, %v; want %+v", got, err, want)
 	}
 	got, err = chatConfigFromEnv(env(map[string]string{"LLM_PROVIDER": "groq", "GROQ_API_KEY": "gsk"}))
@@ -66,6 +66,20 @@ func TestLLM_ProveedorDeChatPorEntorno(t *testing.T) {
 	} {
 		if _, err := chatConfigFromEnv(env(bad)); err == nil {
 			t.Errorf("chatConfigFromEnv(%v) accepted an invalid configuration", bad)
+		}
+	}
+}
+
+func TestCopiloto_UmbralDeSimilitudPorEntorno(t *testing.T) {
+	if got, err := minSimilarityFromEnv(env(nil)); err != nil || got != 0.5 {
+		t.Errorf("default = %v, %v; want 0.5", got, err)
+	}
+	if got, err := minSimilarityFromEnv(env(map[string]string{"RAG_MIN_SIMILARITY": "0.7"})); err != nil || got != 0.7 {
+		t.Errorf("0.7 = %v, %v", got, err)
+	}
+	for _, bad := range []string{"x", "-0.1", "1.5"} {
+		if _, err := minSimilarityFromEnv(env(map[string]string{"RAG_MIN_SIMILARITY": bad})); err == nil {
+			t.Errorf("RAG_MIN_SIMILARITY=%q accepted", bad)
 		}
 	}
 }

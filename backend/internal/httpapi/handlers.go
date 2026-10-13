@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"incident-room-backend/internal/auth"
+	"incident-room-backend/internal/copilot"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/metrics"
 	"incident-room-backend/internal/postmortem"
@@ -87,6 +88,11 @@ type Postmortems interface {
 	Approve(ctx context.Context, actor user.User, incidentID string) (postmortem.Postmortem, error)
 }
 
+// Copilot is the conversational behavior the handlers need.
+type Copilot interface {
+	Ask(ctx context.Context, actor user.User, message string) (copilot.Answer, error)
+}
+
 type handlers struct {
 	users       Users
 	auth        Auth
@@ -96,12 +102,13 @@ type handlers struct {
 	metrics     Metrics
 	runbooks    Runbooks
 	postmortems Postmortems
+	copilot     Copilot
 	logger      *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, m Metrics, rb Runbooks, pm Postmortems, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, metrics: m, runbooks: rb, postmortems: pm, logger: logger}
+func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, m Metrics, rb Runbooks, pm Postmortems, cp Copilot, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, metrics: m, runbooks: rb, postmortems: pm, copilot: cp, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
@@ -126,6 +133,8 @@ func New(users Users, authn Auth, services Services, incidents Incidents, tl Tim
 	mux.Handle("PATCH /api/incidents/{id}/severity", requireAuth(http.HandlerFunc(h.changeSeverity)))
 	// Timeline events are append-only (BR-09): no method may touch a single event.
 	mux.Handle("/api/incidents/{id}/timeline/{eventID}", requireAuth(http.HandlerFunc(eventsAreImmutable)))
+	// Every authenticated user talks to the copilot; its tools run as that user (BR-14).
+	mux.Handle("POST /api/copilot", requireAuth(http.HandlerFunc(h.askCopilot)))
 	// Every authenticated user reads the postmortem; the service decides who
 	// generates, edits and approves it (BR-11, BR-13).
 	mux.Handle("GET /api/incidents/{id}/postmortem", requireAuth(http.HandlerFunc(h.getPostmortem)))
@@ -381,6 +390,22 @@ func eventsAreImmutable(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "timeline events are append-only")
 }
 
+func (h *handlers) askCopilot(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Message string `json:"message"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	ans, err := h.copilot.Ask(r.Context(), actor, in.Message)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ans)
+}
+
 func (h *handlers) getPostmortem(w http.ResponseWriter, r *http.Request) {
 	actor, _ := auth.UserFromContext(r.Context())
 	pm, err := h.postmortems.Get(r.Context(), actor, r.PathValue("id"))
@@ -613,6 +638,14 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "incident not found")
 	case errors.Is(err, incident.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid state transition")
+	case errors.Is(err, copilot.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, copilot.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid message: it must not be empty")
+	case errors.Is(err, copilot.ErrModel):
+		// Checked before runbook.ErrEmbedding: a failed question saves nothing.
+		h.logger.Error("copilot model failed", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "LLM unavailable: the copilot cannot answer right now")
 	case errors.Is(err, postmortem.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, postmortem.ErrNotFound):

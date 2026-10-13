@@ -39,6 +39,14 @@ type Runbook struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Match is a runbook retrieved for a query, with its service name for citing
+// and its cosine similarity to the query (1 = same direction).
+type Match struct {
+	Runbook
+	ServiceName string  `json:"service_name"`
+	Similarity  float64 `json:"similarity"`
+}
+
 // Embedder turns text into a vector.
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
@@ -49,8 +57,11 @@ type Embedder interface {
 // embedding with the row (BR-12). ListByService returns a service's runbooks
 // by title (an unknown service has none). Create returns ErrServiceNotFound
 // for an unknown or malformed service; Update and Delete return ErrNotFound.
-// Update keeps service_id and created_by.
+// Update keeps service_id and created_by. Search returns up to k runbooks whose
+// similarity to embedding is at least minSimilarity, most similar first; only
+// stored runbooks exist, so a removed one is never found (BR-12, BR-14).
 type Repository interface {
+	Search(ctx context.Context, embedding []float32, k int, minSimilarity float64) ([]Match, error)
 	ListByService(ctx context.Context, serviceID string) ([]Runbook, error)
 	Create(ctx context.Context, rb Runbook, embedding []float32) (Runbook, error)
 	Update(ctx context.Context, rb Runbook, embedding []float32) (Runbook, error)
@@ -80,6 +91,26 @@ func (s *Service) List(ctx context.Context, actor user.User, serviceID string) (
 		return nil, fmt.Errorf("list runbooks: %w", err)
 	}
 	return list, nil
+}
+
+// Search retrieves the runbooks most related to query for the copilot (RAG);
+// every authenticated role reads runbooks (BR-10).
+func (s *Service) Search(ctx context.Context, actor user.User, query string, k int, minSimilarity float64) ([]Match, error) {
+	if incident.Authorize(actor) != nil {
+		return nil, ErrForbidden
+	}
+	embedding, err := s.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrEmbedding, err)
+	}
+	if len(embedding) != Dimensions {
+		return nil, fmt.Errorf("%w: got %d dimensions, want %d", ErrEmbedding, len(embedding), Dimensions)
+	}
+	matches, err := s.repo.Search(ctx, embedding, k, minSimilarity)
+	if err != nil {
+		return nil, fmt.Errorf("search runbooks: %w", err)
+	}
+	return matches, nil
 }
 
 // Create stores a runbook of a service with the embedding of its content. Only
