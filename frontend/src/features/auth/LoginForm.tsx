@@ -36,7 +36,7 @@ export function LoginForm({ onLoggedIn, onShowRegister, notice }: Props) {
     <form
       data-testid="login-form"
       onSubmit={submit}
-      className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800"
+      className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
       <h1>Iniciar sesión</h1>
       {notice && (

@@ -1,16 +1,25 @@
 @import 'tailwindcss';
 
+/* The app is always dark: the `dark` class on <html> activates every `dark:` variant. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
 }
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
 }
 
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-900 dark:text-slate-100;
+    @apply bg-slate-950 text-slate-300 antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply text-white;
   }
 
   h1 {
@@ -27,5 +36,33 @@
 
   button:not(:disabled) {
     @apply cursor-pointer;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-blue-500;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    @apply text-slate-500;
+  }
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.drawer-panel {
+  animation: drawer-in 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer-panel {
+    animation: none;
   }
 }

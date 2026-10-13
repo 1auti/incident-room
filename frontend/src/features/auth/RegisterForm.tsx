@@ -34,7 +34,7 @@ export function RegisterForm({ onRegistered, onShowLogin }: Props) {
     <form
       data-testid="register-form"
       onSubmit={submit}
-      className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800"
+      className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
       <h1>Crear cuenta</h1>
       <Field>

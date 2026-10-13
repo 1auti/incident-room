@@ -3,11 +3,11 @@ import type { HTMLAttributes } from 'react'
 export type BadgeTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
 
 const tones: Record<BadgeTone, string> = {
-  neutral: 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200',
-  info: 'bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-200',
-  success: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200',
-  warning: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
-  danger: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
+  neutral: 'bg-slate-800 text-slate-300 ring-1 ring-inset ring-slate-700',
+  info: 'bg-blue-950 text-blue-300 ring-1 ring-inset ring-blue-800',
+  success: 'bg-emerald-950 text-emerald-300 ring-1 ring-inset ring-emerald-800',
+  warning: 'bg-amber-950 text-amber-300 ring-1 ring-inset ring-amber-800',
+  danger: 'bg-red-950 text-red-300 ring-1 ring-inset ring-red-800',
 }
 
 type Props = HTMLAttributes<HTMLSpanElement> & { tone?: BadgeTone }

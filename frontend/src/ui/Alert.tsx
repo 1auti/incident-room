@@ -3,9 +3,8 @@ import type { HTMLAttributes } from 'react'
 type Tone = 'error' | 'status'
 
 const tones: Record<Tone, string> = {
-  error: 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200',
-  status:
-    'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200',
+  error: 'border-red-900 bg-red-950/60 text-red-200',
+  status: 'border-emerald-900 bg-emerald-950/60 text-emerald-200',
 }
 
 type Props = HTMLAttributes<HTMLElement> & { tone?: Tone }
