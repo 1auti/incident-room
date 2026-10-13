@@ -175,17 +175,22 @@ func (s *Service) Get(ctx context.Context, actor user.User, id string) (Incident
 	return inc, nil
 }
 
-// transitions is the only table of valid state changes (BR-08). UC-06 adds
-// T2-T4 here.
+// transitions is the only table of valid state changes, T1-T4 (BR-08): no
+// reopening and no skipping states.
 var transitions = map[State][]State{
-	StateDeclared: {StateAcknowledged},
+	StateDeclared:     {StateAcknowledged},
+	StateAcknowledged: {StateMitigating},
+	StateMitigating:   {StateResolved},
+	StateResolved:     {StateClosed},
 }
 
 // Transition moves an incident to the state to. Every transition goes through
 // here. The ingeniero never transitions; an oncall only on incidents of the
-// services they are on-call of; the admin always (BR-08, BR-11). T1 sets
-// acknowledged_at and adds a cambio_estado event (BR-09).
-func (s *Service) Transition(ctx context.Context, actor user.User, id string, to State) (Incident, error) {
+// services they are on-call of; the admin always (BR-08, BR-11). Each one adds
+// a cambio_estado event (BR-09) at the injected instant (BR-05). rootCause is
+// only read by T3, which requires it (BR-06); T4 of a SEV1 requires an approved
+// postmortem (BR-07).
+func (s *Service) Transition(ctx context.Context, actor user.User, id string, to State, rootCause string) (Incident, error) {
 	if err := authorize(actor); err != nil {
 		return Incident{}, err
 	}
@@ -215,11 +220,32 @@ func (s *Service) Transition(ctx context.Context, actor user.User, id string, to
 		Data:       map[string]string{"from": string(inc.State), "to": string(to)},
 		OccurredAt: at,
 	}
-	var ackAt *time.Time
-	if inc.State == StateDeclared && to == StateAcknowledged {
-		ackAt = &at
+	// The flow is linear, so the destination identifies the transition.
+	var upd StateUpdate
+	switch to {
+	case StateAcknowledged: // T1
+		upd.AcknowledgedAt = &at
+	case StateResolved: // T3
+		cause := strings.TrimSpace(rootCause)
+		if cause == "" {
+			return Incident{}, ErrRootCauseRequired
+		}
+		upd.ResolvedAt, upd.RootCause = &at, &cause
+		// The root cause is also the readable content of the event.
+		ev.Body = cause
+	case StateClosed: // T4
+		if inc.Severity == SeveritySEV1 {
+			approved, err := s.repo.HasApprovedPostmortem(ctx, id)
+			if err != nil {
+				return Incident{}, fmt.Errorf("check postmortem: %w", err)
+			}
+			if !approved {
+				return Incident{}, ErrPostmortemRequired
+			}
+		}
+		upd.ClosedAt = &at
 	}
-	updated, err := s.repo.UpdateState(ctx, id, inc.State, to, ackAt, ev)
+	updated, err := s.repo.UpdateState(ctx, id, inc.State, to, upd, ev)
 	if err != nil {
 		return Incident{}, fmt.Errorf("update state: %w", err)
 	}

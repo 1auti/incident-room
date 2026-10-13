@@ -19,7 +19,12 @@ export default function App() {
           <ServicesPage user={user} />
           <IncidentBoard onOpen={setSelectedIncidentId} />
           {selectedIncidentId !== null && (
-            <IncidentDetail incidentId={selectedIncidentId} onClose={() => setSelectedIncidentId(null)} />
+            // key: opening another incident starts a fresh detail, so no draft (e.g. a root cause) leaks into it.
+            <IncidentDetail
+              key={selectedIncidentId}
+              incidentId={selectedIncidentId}
+              onClose={() => setSelectedIncidentId(null)}
+            />
           )}
           <DeclareIncidentForm />
         </main>
