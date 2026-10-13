@@ -1,10 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 
-// UC-11.6 (a service with incidents or runbooks cannot be removed) cannot be checked in e2e
-// today: incidents (UC-02) and runbooks (UC-07) cannot be created yet. It is covered by
-// TestBR20_*, TestUC116_* and TestPostgres_FKBloqueaBajaEsErrInUse in the backend.
-
 const adminEmail = process.env.ADMIN_EMAIL ?? ''
 const adminPassword = process.env.ADMIN_PASSWORD ?? ''
 
@@ -240,6 +236,38 @@ test('UC-11.5 admin removes a service without dependencies', async ({ page }) =>
   await page.reload()
   await expect(page.getByTestId('services-list')).toBeVisible()
   await expect(row(page, name)).toHaveCount(0)
+})
+
+test('UC-11.6 a service with an incident or a runbook cannot be removed and stays unchanged (BR-20)', async ({
+  page,
+  playwright,
+  baseURL,
+}) => {
+  const admin = await adminContext(playwright, baseURL)
+  const withIncident = await createViaApi(admin, uniqueName(), 'importante')
+  const withRunbook = await createViaApi(admin, uniqueName(), 'estandar')
+  const declared = await admin.post('/api/incidents', {
+    data: { title: `inc-${randomUUID()}`, service_id: withIncident.id, impact: 'menor' },
+  })
+  expect(declared.status()).toBe(201)
+  const runbook = await admin.post(`/api/services/${withRunbook.id}/runbooks`, {
+    data: { title: 'Runbook', content: 'Paso 1' },
+  })
+  expect(runbook.status()).toBe(201)
+
+  for (const svc of [withIncident, withRunbook]) {
+    expect((await admin.delete(`/api/services/${svc.id}`)).status()).toBe(409)
+  }
+  // From the UI the refusal is shown and the service stays listed.
+  await loginAsAdminUi(page)
+  await row(page, withRunbook.name).getByTestId('service-delete').click()
+  await expect(page.getByTestId('service-error')).toBeVisible()
+  await expect(row(page, withRunbook.name)).toBeVisible()
+
+  const list = await listViaApi(admin)
+  for (const svc of [withIncident, withRunbook]) {
+    expect(list.find((s) => s.id === svc.id)).toEqual(svc)
+  }
 })
 
 test('UC-11.7 every authenticated role sees the service list; no session gets 401', async ({

@@ -25,7 +25,9 @@ import (
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/llm"
 	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -35,7 +37,10 @@ import (
 const (
 	sessionTTL                = 24 * time.Hour
 	defaultEscalationInterval = 10 * time.Second
-	shutdownTimeout           = 10 * time.Second
+	// Embeddings always come from Ollama; 768 dimensions match the runbooks table (UC-07).
+	defaultOllamaURL      = "http://localhost:11434"
+	defaultEmbeddingModel = "nomic-embed-text"
+	shutdownTimeout       = 10 * time.Second
 )
 
 func main() {
@@ -80,6 +85,11 @@ func run() error {
 	incidentSvc := incident.NewService(incidentRepo, time.Now, sla)
 	timelineSvc := timeline.NewService(incidentRepo, time.Now)
 	metricsSvc := metrics.NewService(metrics.NewPostgresRepository(pool), time.Now, sla)
+	embedder, err := llm.NewOllamaEmbedder(envOr(os.Getenv, "OLLAMA_URL", defaultOllamaURL), envOr(os.Getenv, "EMBEDDING_MODEL", defaultEmbeddingModel))
+	if err != nil {
+		return err
+	}
+	runbookSvc := runbook.NewService(runbook.NewPostgresRepository(pool), embedder, time.Now)
 
 	if email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && password != "" {
 		if err := userSvc.EnsureAdmin(ctx, email, password); err != nil {
@@ -108,7 +118,7 @@ func run() error {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, logger), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, runbookSvc, logger), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
 
@@ -147,6 +157,14 @@ func runEscalation(ctx context.Context, svc overdueEscalator, interval time.Dura
 			}
 		}
 	}
+}
+
+// envOr returns the variable name, or fallback when it is unset or empty.
+func envOr(getenv func(string) string, name, fallback string) string {
+	if v := getenv(name); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // slaFromEnv reads SLA_SEV1, SLA_SEV2 and SLA_SEV3 over the defaults (BR-03).

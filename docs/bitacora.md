@@ -184,3 +184,33 @@ Una entrada por iteración relevante. Es la materia prima del README.
   - (4) Queda como deuda: `RequireAuth` debería tratar `context.Canceled` como cancelación del cliente y no loguearlo como error interno.
   - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan; la e2e completa da 49 passed en tres corridas.
 - **Ajuste a las reglas de contexto:** ninguno.
+
+### 2026-10-13 — UC-07 — Gestión de runbooks con embeddings
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Si" al plan de UC-07: LangChainGo, fallo cerrado si Ollama no responde y un fake de Ollama en la frontera HTTP para la e2e
+- **Qué propuso el agente:**
+  - **Migración `0007`:** `CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public` y la tabla `runbooks`, con `service_id` como FK sin cascade (BR-20), CHECK de título y contenido no vacíos y `embedding public.vector(768) NOT NULL`.
+  - **Paquete `internal/runbook`:** un `Service` donde solo el admin gestiona y todo autenticado lee. Valida, embebe el **contenido** y verifica que el vector tenga 768 dimensiones antes de escribir; la baja es un `DELETE` físico, así que la fila y su embedding desaparecen juntos. Define su propia interfaz `Embedder`. El vector se envía como literal `'[…]'::public.vector`, sin `pgvector-go`.
+  - **Paquete `internal/llm`:** adaptador del embedder de LangChainGo v0.1.15 (`POST /api/embed`), con timeout de 30 s.
+  - **Configuración:** `OLLAMA_URL` y `EMBEDDING_MODEL`.
+  - **UI:** `RunbooksPanel` con la lista de cada servicio montada con `key={serviceId}`; los controles de gestión solo se muestran al admin.
+  - **E2E:** `e2e/fake-ollama.mjs` devuelve una bolsa de palabras hasheada de 768 dimensiones, determinista; Playwright lo levanta como `webServer` y el backend lo usa a través de `OLLAMA_URL`.
+  - **Deuda de UC-11 saldada:** `HasRunbooks` ahora es real y se agregó el e2e de UC-11.6 (un servicio con incidente o con runbook no se puede dar de baja).
+- **Qué falló y qué capa lo detectó:**
+  - (1) context7 no conecta (403 del proxy), así que la API de LangChainGo se leyó del código fuente del módulo.
+  - (2) El Postgres local no tenía pgvector; se instaló por apt después de actualizar el índice. La instalación detuvo el cluster, y lo detectaron los tests SQL con "connection refused".
+  - (3) `dbtest` usaba solo el schema del test como `search_path` y no veía el tipo `vector` instalado en `public`. Se previó al diseñar el plan.
+  - (4) El `reviewer` no halló bloqueantes. Sí marcó varias mejoras:
+    - `CREATE EXTENSION vector` requiere superusuario y eso no estaba documentado;
+    - el cast `::vector` no estaba calificado con el schema;
+    - `OLLAMA_URL`, `EMBEDDING_MODEL` y `ollama pull` faltaban en el README;
+    - el cliente de Ollama no tenía timeout;
+    - el contenido se guardaba recortado, lo que rompe la indentación de un procedimiento;
+    - el fake se caía con un JSON inválido;
+    - `runbook` depende de `incident.Authorize` solo para validar el rol.
+- **Corrección / decisión:**
+  - (3) El `search_path` pasó a ser `<schema>, public`.
+  - (4) Se aplicaron todas las mejoras salvo la última. `incident.Authorize` queda como la verificación de rol que ya comparten `timeline`, `metrics` y `runbook`.
+  - Pendiente para UC-10: verificar de punta a punta que el copiloto no recupera un runbook dado de baja (segunda mitad de UC-07.5).
+  - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan contra Postgres 16 con pgvector 0.6; la e2e da 56 passed en tres corridas.
+- **Ajuste a las reglas de contexto:** el README documenta la configuración de Ollama y el requisito de superusuario para pgvector.

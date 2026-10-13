@@ -15,6 +15,7 @@ import (
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -69,6 +70,14 @@ type Metrics interface {
 	Dashboard(ctx context.Context, actor user.User, q metrics.Query) (metrics.Dashboard, error)
 }
 
+// Runbooks is the runbook behavior the handlers need.
+type Runbooks interface {
+	List(ctx context.Context, actor user.User, serviceID string) ([]runbook.Runbook, error)
+	Create(ctx context.Context, actor user.User, serviceID, title, content string) (runbook.Runbook, error)
+	Update(ctx context.Context, actor user.User, id, title, content string) (runbook.Runbook, error)
+	Delete(ctx context.Context, actor user.User, id string) error
+}
+
 type handlers struct {
 	users     Users
 	auth      Auth
@@ -76,12 +85,13 @@ type handlers struct {
 	incidents Incidents
 	timeline  Timeline
 	metrics   Metrics
+	runbooks  Runbooks
 	logger    *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, m Metrics, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, metrics: m, logger: logger}
+func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, m Metrics, rb Runbooks, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, metrics: m, runbooks: rb, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
@@ -106,6 +116,11 @@ func New(users Users, authn Auth, services Services, incidents Incidents, tl Tim
 	mux.Handle("PATCH /api/incidents/{id}/severity", requireAuth(http.HandlerFunc(h.changeSeverity)))
 	// Timeline events are append-only (BR-09): no method may touch a single event.
 	mux.Handle("/api/incidents/{id}/timeline/{eventID}", requireAuth(http.HandlerFunc(eventsAreImmutable)))
+	// Every authenticated user reads runbooks; the service lets only the admin manage them (BR-10, BR-12).
+	mux.Handle("GET /api/services/{id}/runbooks", requireAuth(http.HandlerFunc(h.listRunbooks)))
+	mux.Handle("POST /api/services/{id}/runbooks", requireAuth(http.HandlerFunc(h.createRunbook)))
+	mux.Handle("PUT /api/runbooks/{id}", requireAuth(http.HandlerFunc(h.updateRunbook)))
+	mux.Handle("DELETE /api/runbooks/{id}", requireAuth(http.HandlerFunc(h.deleteRunbook)))
 	// Every authenticated user sees the dashboard (BR-10).
 	mux.Handle("GET /api/metrics", requireAuth(http.HandlerFunc(h.dashboard)))
 	mux.Handle("GET /api/users", requireAuth(requireAdmin(http.HandlerFunc(h.listUsers))))
@@ -350,6 +365,61 @@ func eventsAreImmutable(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "timeline events are append-only")
 }
 
+type runbookInput struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+func (h *handlers) listRunbooks(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	list, err := h.runbooks.List(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if list == nil {
+		list = []runbook.Runbook{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *handlers) createRunbook(w http.ResponseWriter, r *http.Request) {
+	var in runbookInput
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	rb, err := h.runbooks.Create(r.Context(), actor, r.PathValue("id"), in.Title, in.Content)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, rb)
+}
+
+func (h *handlers) updateRunbook(w http.ResponseWriter, r *http.Request) {
+	var in runbookInput
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	rb, err := h.runbooks.Update(r.Context(), actor, r.PathValue("id"), in.Title, in.Content)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rb)
+}
+
+func (h *handlers) deleteRunbook(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	if err := h.runbooks.Delete(r.Context(), actor, r.PathValue("id")); err != nil {
+		h.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // dashboard reads ?period=<n>d or a free range ?from=&to= (RFC 3339); with
 // neither the service applies its default period. Which presets exist is the
 // service's decision (ErrInvalidPeriod).
@@ -481,6 +551,18 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "incident not found")
 	case errors.Is(err, incident.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid state transition")
+	case errors.Is(err, runbook.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid runbook: title and content are required")
+	case errors.Is(err, runbook.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, runbook.ErrNotFound):
+		writeError(w, http.StatusNotFound, "runbook not found")
+	case errors.Is(err, runbook.ErrServiceNotFound):
+		writeError(w, http.StatusNotFound, "service not found")
+	case errors.Is(err, runbook.ErrEmbedding):
+		// The cause (provider down, wrong model) is for the operator, not the client.
+		h.logger.Error("runbook embedding failed", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "embedding provider unavailable: the runbook was not saved")
 	case errors.Is(err, metrics.ErrInvalidPeriod):
 		writeError(w, http.StatusBadRequest, "invalid period: use period=7d|30d or both from and to with from before to, not both")
 	case errors.Is(err, incident.ErrRootCauseRequired):

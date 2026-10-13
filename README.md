@@ -118,6 +118,8 @@ make dev        # levanta la aplicación completa para usarla en el navegador (r
 
 `make dev` levanta un Postgres descartable, el backend (puerto 8080) y el frontend (puerto 5173) y muestra la URL y las credenciales del admin de ejemplo (`admin@incident-room.local` con una contraseña aleatoria, o las que exportes en `ADMIN_EMAIL` y `ADMIN_PASSWORD`). Ctrl-C lo detiene y elimina la base: **los datos no persisten entre ejecuciones**. Los puertos se cambian con `DEV_API_PORT` y `DEV_WEB_PORT`. Requiere Go, Node, Docker y `curl`.
 
+Los runbooks (UC-07) guardan un embedding calculado por Ollama: crear o editar uno responde 503 si Ollama no está disponible. Se configura con `OLLAMA_URL` (por defecto `http://localhost:11434`) y `EMBEDDING_MODEL` (por defecto `nomic-embed-text`, que produce los 768 valores que espera la tabla; otro modelo requiere una migración nueva). Antes de usarlo, `ollama pull nomic-embed-text`. La migración `0007` crea la extensión `vector`, lo que requiere que el rol de la base sea superusuario (lo es en `make dev`, `make e2e` y `make verify-db`); si no lo es, un DBA debe crearla antes con `CREATE EXTENSION vector WITH SCHEMA public`. La e2e no usa Ollama real: `e2e/fake-ollama.mjs` responde en su lugar.
+
 Los secretos vienen del entorno; el proyecto no usa archivos `.env` en el repositorio. El proxy de Vite (`/api`) solo cubre desarrollo: cómo se sirve la aplicación en producción es una decisión de arquitectura pendiente.
 
 ## Estructura del repositorio
