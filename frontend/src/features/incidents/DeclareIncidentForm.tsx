@@ -15,7 +15,7 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : 'Error inesperado'
 }
 
-export function DeclareIncidentForm() {
+export function DeclareIncidentForm({ onDeclared }: { onDeclared?: () => void }) {
   const [services, setServices] = useState<Service[]>([])
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -76,6 +76,7 @@ export function DeclareIncidentForm() {
     setResult(null)
     try {
       setResult(await declareIncident({ title, description, service_id: serviceId, impact, severity }))
+      onDeclared?.()
     } catch (err) {
       setError(messageOf(err))
     }

@@ -19,6 +19,8 @@ export default function App() {
   const [declareOpen, setDeclareOpen] = useState(false)
   const [runbooksOpen, setRunbooksOpen] = useState(false)
   const [copilotOpen, setCopilotOpen] = useState(false)
+  // Bumped after a declaration so the board and the KPIs remount and refetch the new incident.
+  const [refreshKey, setRefreshKey] = useState(0)
   return (
     <AuthGate>
       {(user) => (
@@ -32,6 +34,7 @@ export default function App() {
         >
           {view === 'dashboard' && (
             <KpiDashboard
+              key={refreshKey}
               user={user}
               onOpenIncident={(id) => {
                 setSelectedIncidentId(id)
@@ -41,7 +44,7 @@ export default function App() {
           )}
           {view === 'incidents' && (
             <div className="grid gap-4 lg:grid-cols-2">
-              <IncidentBoard onOpen={setSelectedIncidentId} />
+              <IncidentBoard key={refreshKey} onOpen={setSelectedIncidentId} />
               {selectedIncidentId !== null && (
                 // key: opening another incident starts a fresh detail, so no draft (e.g. a root cause) leaks into it.
                 <IncidentDetail
@@ -55,7 +58,7 @@ export default function App() {
           {view === 'services' && <ServicesPage user={user} />}
           {view === 'metrics' && <MetricsDashboard />}
           <Modal open={declareOpen} onClose={() => setDeclareOpen(false)} label="Declarar incidente">
-            <DeclareIncidentForm />
+            <DeclareIncidentForm onDeclared={() => setRefreshKey((k) => k + 1)} />
           </Modal>
           <Drawer open={runbooksOpen} onClose={() => setRunbooksOpen(false)} label="Runbooks">
             <RunbooksPanel user={user} />
