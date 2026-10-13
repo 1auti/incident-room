@@ -105,3 +105,57 @@ func TestPostgres_RunbookConEmbeddingYBajaFisica(t *testing.T) {
 		}
 	}
 }
+
+// unit returns a 768-dimension vector pointing mostly at axis i (cosine similarity
+// between unit(i) and unit(j) is 1 for i == j and ~0 otherwise).
+func unit(i int, tilt float32) []float32 {
+	v := make([]float32, runbook.Dimensions)
+	v[i], v[i+1] = 1, tilt
+	return v
+}
+
+func TestPostgres_BusquedaPorSimilitud(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := runbook.NewPostgresRepository(pool)
+	var adminID, serviceID string
+	if err := pool.QueryRow(c, `INSERT INTO users (name, email, password_hash, role) VALUES ('Ada', 'ada@x.com', 'h', 'admin') RETURNING id`).Scan(&adminID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(c, `INSERT INTO services (name, criticality) VALUES ('payments', 'critica') RETURNING id`).Scan(&serviceID); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	create := func(title string, v []float32) runbook.Runbook {
+		t.Helper()
+		rb, err := repo.Create(c, runbook.Runbook{ServiceID: serviceID, Title: title, Content: title, CreatedBy: adminID, UpdatedAt: at}, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rb
+	}
+	exact := create("Pool agotado", unit(0, 0))
+	near := create("Pool lento", unit(0, 0.5))
+	create("Disco lleno", unit(10, 0))
+
+	got, err := repo.Search(c, unit(0, 0), 5, 0.5)
+	if err != nil || len(got) != 2 || got[0].ID != exact.ID || got[1].ID != near.ID {
+		t.Fatalf("Search = %+v, %v; want the two pool runbooks, most similar first", got, err)
+	}
+	if got[0].ServiceName != "payments" || got[0].Similarity < 0.99 || got[1].Similarity >= got[0].Similarity {
+		t.Errorf("matches = %+v", got)
+	}
+	if got, _ := repo.Search(c, unit(0, 0), 1, 0.5); len(got) != 1 || got[0].ID != exact.ID {
+		t.Errorf("k=1 = %+v, want only the closest", got)
+	}
+	if got, _ := repo.Search(c, unit(0, 0), 5, 0.95); len(got) != 1 {
+		t.Errorf("high threshold = %+v, want only the exact one", got)
+	}
+	// Removed: no longer retrievable (BR-12).
+	if err := repo.Delete(c, exact.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := repo.Search(c, unit(0, 0), 5, 0.5); len(got) != 1 || got[0].ID != near.ID {
+		t.Errorf("after delete = %+v, want only %s", got, near.ID)
+	}
+}

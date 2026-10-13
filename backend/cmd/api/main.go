@@ -17,12 +17,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"incident-room-backend/internal/auth"
+	"incident-room-backend/internal/copilot"
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/llm"
@@ -45,7 +48,10 @@ const (
 	defaultOllamaChatModel = "llama3.1"
 	defaultGroqURL         = "https://api.groq.com/openai/v1"
 	defaultGroqChatModel   = "llama-3.1-8b-instant"
-	shutdownTimeout        = 10 * time.Second
+	// Copilot RAG (UC-10): runbooks used per question and their minimum similarity.
+	ragTopK              = 3
+	defaultMinSimilarity = 0.5
+	shutdownTimeout      = 10 * time.Second
 )
 
 func main() {
@@ -104,6 +110,12 @@ func run() error {
 		return err
 	}
 	postmortemSvc := postmortem.NewService(incidentRepo, postmortem.NewPostgresRepository(pool), chat, time.Now)
+	minSimilarity, err := minSimilarityFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	copilotSvc := copilot.NewService(chat, runbookSvc, incidentSvc, timelineSvc, serviceMgr,
+		copilot.Config{TopK: ragTopK, MinSimilarity: minSimilarity})
 
 	if email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && password != "" {
 		if err := userSvc.EnsureAdmin(ctx, email, password); err != nil {
@@ -132,7 +144,7 @@ func run() error {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, runbookSvc, postmortemSvc, logger), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, runbookSvc, postmortemSvc, copilotSvc, logger), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
 
@@ -179,15 +191,18 @@ type chatConfig struct {
 }
 
 // chatConfigFromEnv reads LLM_PROVIDER (ollama by default, or groq) and
-// LLM_MODEL; Ollama uses OLLAMA_URL, Groq needs GROQ_API_KEY and may override
-// LLM_BASE_URL. A missing key or an unknown provider stops the start.
+// LLM_MODEL. Both are reached through the OpenAI-compatible API: Ollama under
+// OLLAMA_URL/v1 (it needs no key), Groq at LLM_BASE_URL with GROQ_API_KEY. A
+// missing key or an unknown provider stops the start.
 func chatConfigFromEnv(getenv func(string) string) (chatConfig, error) {
 	switch provider := envOr(getenv, "LLM_PROVIDER", "ollama"); provider {
 	case "ollama":
 		return chatConfig{
 			provider: provider,
-			baseURL:  envOr(getenv, "OLLAMA_URL", defaultOllamaURL),
-			model:    envOr(getenv, "LLM_MODEL", defaultOllamaChatModel),
+			baseURL:  strings.TrimSuffix(envOr(getenv, "OLLAMA_URL", defaultOllamaURL), "/") + "/v1",
+			// Ollama ignores the key, but the OpenAI client refuses an empty one.
+			apiKey: "ollama",
+			model:  envOr(getenv, "LLM_MODEL", defaultOllamaChatModel),
 		}, nil
 	case "groq":
 		key := getenv("GROQ_API_KEY")
@@ -215,10 +230,22 @@ func (c chatConfig) String() string {
 }
 
 func (c chatConfig) build() (*llm.Chat, error) {
-	if c.provider == "groq" {
-		return llm.NewGroqChat(c.baseURL, c.apiKey, c.model)
+	return llm.NewChat(c.baseURL, c.apiKey, c.model)
+}
+
+// minSimilarityFromEnv reads RAG_MIN_SIMILARITY, the cosine similarity a
+// runbook needs to be used by the copilot. It depends on the embeddings model,
+// so it is tunable; the default suits nomic-embed-text.
+func minSimilarityFromEnv(getenv func(string) string) (float64, error) {
+	v := getenv("RAG_MIN_SIMILARITY")
+	if v == "" {
+		return defaultMinSimilarity, nil
 	}
-	return llm.NewOllamaChat(c.baseURL, c.model)
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 || f > 1 {
+		return 0, fmt.Errorf("RAG_MIN_SIMILARITY must be a number between 0 and 1, got %q", v)
+	}
+	return f, nil
 }
 
 // envOr returns the variable name, or fallback when it is unset or empty.

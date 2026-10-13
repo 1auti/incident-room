@@ -102,9 +102,14 @@ Configurados en `.mcp.json` (Claude Code) y `opencode.json` (opencode).
 | `playwright` | local (`npx`) | Validar en la UI cada criterio de aceptación de un caso de uso con interfaz. |
 | `postgres` | local (`uvx`), solo lectura | Verificar esquema y datos después de migraciones o cambios de reglas. Usa un usuario de solo lectura (`db/dev/agent-readonly.sql`). |
 
-## Copiloto conversacional (pendiente)
+## Copiloto conversacional
 
-Consultas sobre runbooks con RAG (pgvector) y acciones por tool calling: abrir incidente, agregar nota, listar abiertos. Se documenta al implementar UC-10.
+`POST /api/copilot` responde preguntas sobre los runbooks con RAG y ejecuta tres herramientas por tool calling: abrir incidente, agregar nota y listar abiertos (UC-10).
+
+- **RAG:** la pregunta se convierte en embedding y se buscan hasta 3 runbooks por similitud coseno en pgvector, con un mínimo configurable con `RAG_MIN_SIMILARITY` (0.5 por defecto, calibrado para `nomic-embed-text`). Las fuentes que muestra la respuesta son los runbooks recuperados por el backend, no lo que diga el modelo.
+- **Sin runbook relevante y sin herramientas usadas**, la respuesta es fija: no encontró información y no propone un procedimiento. Así un modelo no puede inventar pasos ni contradecir la ausencia de herramientas para cerrar o transicionar.
+- **Herramientas:** corren como el usuario autenticado y llaman a los mismos services que la API, así que aplican las mismas reglas (BR-14) y registran a ese usuario como autor. No hay herramienta para cerrar ni transicionar incidentes.
+- **Modelo:** el mismo chat del postmortem (`LLM_PROVIDER`), a través de la API compatible con OpenAI (Ollama en `OLLAMA_URL/v1`). El modelo tiene que soportar tool calling (`llama3.1` lo soporta).
 
 ## Cómo correrlo
 
@@ -118,7 +123,7 @@ make dev        # levanta la aplicación completa para usarla en el navegador (r
 
 `make dev` levanta un Postgres descartable, el backend (puerto 8080) y el frontend (puerto 5173) y muestra la URL y las credenciales del admin de ejemplo (`admin@incident-room.local` con una contraseña aleatoria, o las que exportes en `ADMIN_EMAIL` y `ADMIN_PASSWORD`). Ctrl-C lo detiene y elimina la base: **los datos no persisten entre ejecuciones**. Los puertos se cambian con `DEV_API_PORT` y `DEV_WEB_PORT`. Requiere Go, Node, Docker y `curl`.
 
-Los runbooks (UC-07) guardan un embedding calculado por Ollama: crear o editar uno responde 503 si Ollama no está disponible. Se configura con `OLLAMA_URL` (por defecto `http://localhost:11434`) y `EMBEDDING_MODEL` (por defecto `nomic-embed-text`, que produce los 768 valores que espera la tabla; otro modelo requiere una migración nueva). Antes de usarlo, `ollama pull nomic-embed-text`. La migración `0007` crea la extensión `vector`, lo que requiere que el rol de la base sea superusuario (lo es en `make dev`, `make e2e` y `make verify-db`); si no lo es, un DBA debe crearla antes con `CREATE EXTENSION vector WITH SCHEMA public`. El borrador del postmortem (UC-08) lo escribe un modelo de chat elegido con `LLM_PROVIDER`: `ollama` (por defecto, usa `OLLAMA_URL` y `LLM_MODEL`, por defecto `llama3.1`; antes, `ollama pull llama3.1`) o `groq` (requiere `GROQ_API_KEY`, que el backend exige al arrancar; `LLM_MODEL` por defecto `llama-3.1-8b-instant` y `LLM_BASE_URL` por defecto `https://api.groq.com/openai/v1`). Los embeddings siempre salen de Ollama. Si el modelo no responde, generar el postmortem responde 503 y no guarda nada. La e2e no usa Ollama real: `e2e/fake-ollama.mjs` responde embeddings y chat en su lugar.
+Los runbooks (UC-07) guardan un embedding calculado por Ollama: crear o editar uno responde 503 si Ollama no está disponible. Se configura con `OLLAMA_URL` (por defecto `http://localhost:11434`) y `EMBEDDING_MODEL` (por defecto `nomic-embed-text`, que produce los 768 valores que espera la tabla; otro modelo requiere una migración nueva). Antes de usarlo, `ollama pull nomic-embed-text`. La migración `0007` crea la extensión `vector`, lo que requiere que el rol de la base sea superusuario (lo es en `make dev`, `make e2e` y `make verify-db`); si no lo es, un DBA debe crearla antes con `CREATE EXTENSION vector WITH SCHEMA public`. El borrador del postmortem (UC-08) lo escribe un modelo de chat elegido con `LLM_PROVIDER`: `ollama` (por defecto, usa la API compatible con OpenAI en `OLLAMA_URL/v1` y `LLM_MODEL`, por defecto `llama3.1`; antes, `ollama pull llama3.1`) o `groq` (requiere `GROQ_API_KEY`, que el backend exige al arrancar; `LLM_MODEL` por defecto `llama-3.1-8b-instant` y `LLM_BASE_URL` por defecto `https://api.groq.com/openai/v1`). Los embeddings siempre salen de Ollama. Si el modelo no responde, generar el postmortem responde 503 y no guarda nada. La e2e no usa Ollama real: `e2e/fake-ollama.mjs` responde embeddings y chat en su lugar (para el copiloto, con reglas por palabras clave que imitan un modelo con tool calling).
 
 Los secretos vienen del entorno; el proyecto no usa archivos `.env` en el repositorio. El proxy de Vite (`/api`) solo cubre desarrollo: cómo se sirve la aplicación en producción es una decisión de arquitectura pendiente.
 
