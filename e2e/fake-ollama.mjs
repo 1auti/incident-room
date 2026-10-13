@@ -85,7 +85,10 @@ function copilotTurn(messages) {
   }
   if (/cerr[aá]/.test(lower)) return { content: 'No puedo cerrar incidentes: no tengo una herramienta para eso.' }
 
-  const system = textOf(messages[0])
+  const system = messages
+    .filter((m) => m.role === 'system')
+    .map(textOf)
+    .join('\n')
   const runbook = system.match(/\[Runbook: (.+?) \(servicio .+?\)\]\n([^\n]+)/)
   if (!runbook) return { content: 'Paso 1: reiniciá todos los servidores.' }
   return { content: `Según el runbook "${runbook[1]}": ${runbook[2]}` }

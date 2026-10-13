@@ -247,3 +247,42 @@ Una entrada por iteración relevante. Es la materia prima del README.
   - (3) Se aplicaron todas las mejoras salvo la precondición de versión, que el spec no pide y queda como decisión del usuario.
   - Verificación: `make verify` sale con 0 y `gofmt` no marca nada; los tests Go, SQL incluidos, pasan; la e2e da 62 passed en cuatro corridas.
 - **Ajuste a las reglas de contexto:** el README documenta la configuración del chat.
+
+### 2026-10-13 — UC-10 — Copiloto conversacional (RAG y tool calling)
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Si, con las dos A": un solo cliente de chat compatible con OpenAI, y garantías de RAG deterministas en el backend
+- **Qué propuso el agente:**
+  - **Cliente de chat único:** LangChainGo v0.1.15 no soporta tool calling con su cliente nativo de Ollama, así que `internal/llm/chat.go` es un único cliente compatible con OpenAI para Groq y para Ollama (`OLLAMA_URL/v1`). El postmortem de UC-08 pasó a usarlo y se eliminó el adaptador nativo.
+  - **`runbook.Search`:** búsqueda por similitud coseno en pgvector (top 3, umbral `RAG_MIN_SIMILARITY`, 0.5 por defecto).
+  - **`internal/copilot`:**
+    - Las fuentes son los runbooks recuperados, nunca el texto del modelo.
+    - Sin runbook relevante ni herramienta usada, la respuesta es fija (`NoInformation`).
+    - Hay tres herramientas (`abrir_incidente`, `agregar_nota`, `listar_abiertos`) que llaman a los services como el usuario; no hay herramienta para cerrar ni transicionar.
+    - El bucle tiene un máximo de 4 rondas y no hay memoria de conversación en el backend.
+  - **UI:** panel de chat con fuentes y acciones.
+  - **E2E:** `fake-ollama.mjs` pasa a `/v1/chat/completions` con un modelo de reglas por palabras clave.
+- **Qué falló y qué capa lo detectó:**
+  - (1) **La e2e destapó un error de diseño:** la respuesta fija también pisaba la negativa en texto del modelo ante "cerrá el incidente" (UC-10.6). Un modelo real no llama a una herramienta inexistente: responde con texto. El test unitario no lo veía porque su modelo fake sí intentaba llamar a `cerrar_incidente`.
+  - (2) **El `reviewer` encontró un BLOQUEANTE:** si el modelo fallaba después de ejecutar una herramienta, `Ask` respondía 503 y descartaba las acciones. El usuario no veía el incidente creado y, al reintentar, lo duplicaba.
+  - (3) **El `reviewer` también marcó estas mejoras:**
+    - inyección de instrucciones mediante títulos de incidentes devueltos por `listar_abiertos`, y ningún tope de escrituras por pregunta;
+    - runbooks dentro del mensaje `system`;
+    - errores de infraestructura de las herramientas que se mostraban al modelo y al cliente;
+    - una doble llamada a `services.List`;
+    - un comentario falso en el handler.
+  - (4) **Falla de UC-08.3 en 1 de 7 corridas:** la explicó el `reviewer`. Era una carrera del test: esperaba el textarea, que se actualiza con el `fill`, en lugar de la respuesta del PUT. No era un problema del código.
+  - (5) **Falla de UC-10.2 en 1 de 3 corridas:** la pregunta compartía vocabulario con un runbook legítimo de UC-07.5 que corría en paralelo, y el copiloto lo citaba con razón. El test no estaba bien aislado. Lo detectó la e2e.
+- **Corrección / decisión:**
+  - (1) La respuesta fija aclara además que el copiloto no puede cerrar, resolver ni transicionar. Se agregó un test unitario con la negativa en texto.
+  - (2) Si ya hubo acciones y el modelo falla o se agotan las rondas, la API responde 200 con las acciones y un texto armado a partir de ellas.
+  - (3) Se aplicaron las mejoras:
+    - una sola herramienta que escribe por pregunta, y solo como primera acción;
+    - runbooks en un mensaje aparte, delimitados como datos;
+    - los errores que no son de dominio cortan la pregunta, se loguean y dan 500;
+    - una sola llamada a `services.List`;
+    - el comentario del handler, corregido.
+  - (4) El test espera la respuesta del PUT.
+  - (5) Se usó vocabulario sin solapamiento.
+  - Quedan sin aplicar: los tests BR-14 son guiones y no tablas (hay precedente en el repo), y el panel no refresca el tablero después de una acción del copiloto (el spec no lo pide).
+  - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan; la e2e da 68 passed en tres corridas seguidas.
+- **Ajuste a las reglas de contexto:** el README documenta el copiloto, `RAG_MIN_SIMILARITY` y que Ollama se usa en `OLLAMA_URL/v1`.

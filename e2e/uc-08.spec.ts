@@ -247,7 +247,12 @@ test('UC-08.3 the draft is edited or regenerated, keeping a single postmortem (B
   await openDetail(page, id)
   await expect(page.getByTestId('postmortem-status')).toHaveText('borrador')
   await page.getByTestId('postmortem-content').fill('## Resumen\nTexto corregido por el on-call')
-  await page.getByTestId('postmortem-save').click()
+  // The textarea already shows the text after fill: wait for the PUT, not for the UI.
+  const [saved] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith(`/api/incidents/${id}/postmortem`) && r.request().method() === 'PUT'),
+    page.getByTestId('postmortem-save').click(),
+  ])
+  expect(saved.status()).toBe(200)
   await expect(page.getByTestId('postmortem-content')).toHaveValue('## Resumen\nTexto corregido por el on-call')
 
   const edited = await postmortemOf(admin, id)

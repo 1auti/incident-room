@@ -188,21 +188,22 @@ test('UC-10.2 without a relevant runbook, or once it is removed, the copilot say
   expect(unknown.reply).not.toContain('reiniciá todos los servidores')
   expect(unknown.sources).toEqual([])
 
-  // A runbook is cited while it exists, and no longer after an admin removes it.
-  const serviceId = await createService(admin, `queue-${t}`)
-  const question = `¿cómo drenar la cola ${t} atascada de facturación?`
+  // A runbook is cited while it exists, and no longer after an admin removes it. The wording shares
+  // no words with other specs' runbooks, which run in parallel on the same database.
+  const serviceId = await createService(admin, `billing-${t}`)
+  const question = `¿cómo regenero la clave ${t} del firmador de facturas?`
   const runbookId = await createRunbook(
     admin,
     serviceId,
-    `Cola atascada ${t}`,
-    `Para drenar la cola ${t} atascada de facturación: pausar consumidores`,
+    `Firmador de facturas ${t}`,
+    `Para regenerar la clave ${t} del firmador de facturas: usar la consola del HSM`,
   )
   expect((await ask(engineer.ctx, question)).sources.map((s) => s.runbook_id)).toContain(runbookId)
   expect((await admin.delete(`/api/runbooks/${runbookId}`)).status()).toBe(204)
 
   const after = await ask(engineer.ctx, question)
   expect(after.sources.map((s) => s.runbook_id)).not.toContain(runbookId)
-  expect(after.reply).not.toContain('pausar consumidores')
+  expect(after.reply).not.toContain('consola del HSM')
 
   await loginUi(page, engineer.email, password)
   const reply = await askUi(page, question)
