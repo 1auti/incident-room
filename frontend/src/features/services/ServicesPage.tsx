@@ -10,6 +10,11 @@ import {
   type Service,
 } from '../../api/services'
 import { listUsers } from '../../api/users'
+import { Alert } from '../../ui/Alert'
+import { Button } from '../../ui/Button'
+import { Card } from '../../ui/Card'
+import { Field, controlClass } from '../../ui/Field'
+import { tableClass, tdClass, thClass } from '../../ui/table'
 
 interface Props {
   user: User
@@ -29,6 +34,7 @@ function CriticalitySelect(props: {
       aria-label={props.ariaLabel}
       value={props.value}
       onChange={(e) => props.onChange(e.target.value as Criticality)}
+      className={controlClass}
     >
       {criticalities.map((c) => (
         <option key={c} value={c}>
@@ -127,46 +133,67 @@ export function ServicesPage({ user }: Props) {
   }
 
   return (
-    <section>
-      <h2>Servicios</h2>
-      {error && <p role="alert" data-testid="service-error">{error}</p>}
+    <Card title="Servicios">
+      {error && (
+        <Alert role="alert" data-testid="service-error" className="mb-3">
+          {error}
+        </Alert>
+      )}
       {isAdmin && (
-        <form data-testid="service-create-form" onSubmit={submitCreate}>
-          <label>
+        <form data-testid="service-create-form" onSubmit={submitCreate} className="mb-4 flex flex-wrap items-end gap-3">
+          <Field>
             Nombre
-            <input data-testid="service-name-input" value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label>
+            <input
+              data-testid="service-name-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className={controlClass}
+            />
+          </Field>
+          <Field>
             Criticidad
             <CriticalitySelect testId="service-criticality-select" value={criticality} onChange={setCriticality} />
-          </label>
-          <button data-testid="service-create-submit" type="submit">Crear servicio</button>
+          </Field>
+          <Button data-testid="service-create-submit" type="submit">
+            Crear servicio
+          </Button>
         </form>
       )}
-      <table data-testid="services-list">
+      <table data-testid="services-list" className={tableClass}>
         <thead>
           <tr>
-            <th>Nombre</th>
-            <th>Criticidad</th>
-            <th>On-call</th>
-            {isAdmin && <th>Acciones</th>}
+            <th className={thClass}>Nombre</th>
+            <th className={thClass}>Criticidad</th>
+            <th className={thClass}>On-call</th>
+            {isAdmin && <th className={thClass}>Acciones</th>}
           </tr>
         </thead>
         <tbody>
           {services.map((s) => (
             <tr key={s.id} data-testid="service-row" data-service-name={s.name}>
-              <td data-testid="service-name">{s.name}</td>
-              <td data-testid="service-criticality">{s.criticality}</td>
-              <td data-testid="service-oncall">{s.oncall_user_id ?? 'Sin on-call'}</td>
+              <td data-testid="service-name" className={tdClass}>
+                {s.name}
+              </td>
+              <td data-testid="service-criticality" className={tdClass}>
+                {s.criticality}
+              </td>
+              <td data-testid="service-oncall" className={tdClass}>
+                {s.oncall_user_id ?? 'Sin on-call'}
+              </td>
               {isAdmin && (
-                <td>
+                <td className={tdClass}>
                   {editingId === s.id ? (
-                    <form data-testid="service-edit-form" onSubmit={(e) => submitEdit(e, s.id)}>
+                    <form
+                      data-testid="service-edit-form"
+                      onSubmit={(e) => submitEdit(e, s.id)}
+                      className="flex flex-wrap items-center gap-2"
+                    >
                       <input
                         data-testid="service-edit-name"
                         aria-label="Nombre del servicio"
                         value={editName}
                         onChange={(e) => setEditName(e.target.value)}
+                        className={controlClass}
                       />
                       <CriticalitySelect
                         testId="service-edit-criticality"
@@ -174,16 +201,21 @@ export function ServicesPage({ user }: Props) {
                         value={editCriticality}
                         onChange={setEditCriticality}
                       />
-                      <button data-testid="service-edit-submit" type="submit">Guardar</button>
-                      <button type="button" onClick={() => setEditingId(null)}>Cancelar</button>
+                      <Button data-testid="service-edit-submit" type="submit">
+                        Guardar
+                      </Button>
+                      <Button type="button" variant="secondary" onClick={() => setEditingId(null)}>
+                        Cancelar
+                      </Button>
                     </form>
                   ) : (
-                    <>
+                    <div className="flex flex-wrap items-center gap-2">
                       <select
                         data-testid="service-oncall-select"
                         aria-label="On-call del servicio"
                         value={oncallChoice[s.id] ?? s.oncall_user_id ?? ''}
                         onChange={(e) => setOncallChoice({ ...oncallChoice, [s.id]: e.target.value })}
+                        className={controlClass}
                       >
                         <option value="">Seleccionar on-call</option>
                         {oncallUsers.map((u) => (
@@ -192,7 +224,7 @@ export function ServicesPage({ user }: Props) {
                           </option>
                         ))}
                       </select>
-                      <button
+                      <Button
                         data-testid="service-oncall-submit"
                         type="button"
                         disabled={(oncallChoice[s.id] ?? s.oncall_user_id ?? '') === ''}
@@ -203,12 +235,19 @@ export function ServicesPage({ user }: Props) {
                         }
                       >
                         Assign on-call
-                      </button>
-                      <button data-testid="service-edit" type="button" onClick={() => startEdit(s)}>Editar</button>
-                      <button data-testid="service-delete" type="button" onClick={() => void run(() => deleteService(s.id))}>
+                      </Button>
+                      <Button data-testid="service-edit" type="button" variant="secondary" onClick={() => startEdit(s)}>
+                        Editar
+                      </Button>
+                      <Button
+                        data-testid="service-delete"
+                        type="button"
+                        variant="danger"
+                        onClick={() => void run(() => deleteService(s.id))}
+                      >
                         Borrar
-                      </button>
-                    </>
+                      </Button>
+                    </div>
                   )}
                 </td>
               )}
@@ -216,6 +255,6 @@ export function ServicesPage({ user }: Props) {
           ))}
         </tbody>
       </table>
-    </section>
+    </Card>
   )
 }

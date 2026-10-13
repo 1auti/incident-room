@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getDashboard, type Dashboard, type MetricsPeriod } from '../../api/metrics'
+import { Alert } from '../../ui/Alert'
+import { Card } from '../../ui/Card'
+import { Field, controlClass } from '../../ui/Field'
+import { tableClass, tdClass, thClass } from '../../ui/table'
 
 type Mode = '30d' | '7d' | 'range'
 
@@ -61,82 +65,94 @@ export function MetricsDashboard() {
   const dashboard = current?.dashboard ?? null
 
   return (
-    <section data-testid="metrics-dashboard">
-      <h2>Métricas</h2>
-      <label>
-        Período
-        <select data-testid="metrics-period-select" value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
-          <option value="30d">Últimos 30 días</option>
-          <option value="7d">Últimos 7 días</option>
-          <option value="range">Rango libre</option>
-        </select>
-      </label>
-      {mode === 'range' && (
-        <span>
-          <label>
-            Desde
-            <input
-              type="date"
-              data-testid="metrics-range-from"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-            />
-          </label>
-          <label>
-            Hasta (incluido)
-            <input
-              type="date"
-              data-testid="metrics-range-to"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-            />
-          </label>
-        </span>
-      )}
+    <Card data-testid="metrics-dashboard" title="Métricas">
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <Field>
+          Período
+          <select
+            data-testid="metrics-period-select"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as Mode)}
+            className={controlClass}
+          >
+            <option value="30d">Últimos 30 días</option>
+            <option value="7d">Últimos 7 días</option>
+            <option value="range">Rango libre</option>
+          </select>
+        </Field>
+        {mode === 'range' && (
+          <span className="flex flex-wrap items-end gap-3">
+            <Field>
+              Desde
+              <input
+                type="date"
+                data-testid="metrics-range-from"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className={controlClass}
+              />
+            </Field>
+            <Field>
+              Hasta (incluido)
+              <input
+                type="date"
+                data-testid="metrics-range-to"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className={controlClass}
+              />
+            </Field>
+          </span>
+        )}
+      </div>
       {period !== null && current === null && <p role="status">Cargando...</p>}
       {current?.error && (
-        <p role="alert" data-testid="metrics-error">
+        <Alert role="alert" data-testid="metrics-error">
           {current.error}
-        </p>
+        </Alert>
       )}
       {dashboard && (
-        <div>
-          <p>
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-slate-600 dark:text-slate-300">
             Período (UTC): <time data-testid="metrics-period-from">{dashboard.from}</time> a{' '}
             <time data-testid="metrics-period-to">{dashboard.to}</time>
           </p>
-          <p>
-            MTTR:{' '}
-            <span data-testid="metrics-mttr">
-              {dashboard.mttr_seconds === null ? 'Sin datos' : formatMinutes(dashboard.mttr_seconds)}
-            </span>
-          </p>
-          <p>
-            Cumplimiento de SLA:{' '}
-            <span data-testid="metrics-sla">
-              {dashboard.sla_compliance_percent === null
-                ? 'Sin datos'
-                : formatPercent(dashboard.sla_compliance_percent)}
-            </span>
-          </p>
-          <table>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <p className="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700">
+              MTTR:{' '}
+              <span data-testid="metrics-mttr" className="block text-2xl font-semibold">
+                {dashboard.mttr_seconds === null ? 'Sin datos' : formatMinutes(dashboard.mttr_seconds)}
+              </span>
+            </p>
+            <p className="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700">
+              Cumplimiento de SLA:{' '}
+              <span data-testid="metrics-sla" className="block text-2xl font-semibold">
+                {dashboard.sla_compliance_percent === null
+                  ? 'Sin datos'
+                  : formatPercent(dashboard.sla_compliance_percent)}
+              </span>
+            </p>
+          </div>
+          <table className={tableClass}>
             <thead>
               <tr>
-                <th>Servicio</th>
-                <th>Incidentes</th>
+                <th className={thClass}>Servicio</th>
+                <th className={thClass}>Incidentes</th>
               </tr>
             </thead>
             <tbody>
               {dashboard.incidents_by_service.map((s) => (
                 <tr key={s.service_id} data-testid="metrics-service-row" data-service-name={s.name}>
-                  <td>{s.name}</td>
-                  <td data-testid="metrics-service-count">{s.count}</td>
+                  <td className={tdClass}>{s.name}</td>
+                  <td data-testid="metrics-service-count" className={tdClass}>
+                    {s.count}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
-    </section>
+    </Card>
   )
 }
