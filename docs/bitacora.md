@@ -286,3 +286,13 @@ Una entrada por iteración relevante. Es la materia prima del README.
   - Quedan sin aplicar: los tests BR-14 son guiones y no tablas (hay precedente en el repo), y el panel no refresca el tablero después de una acción del copiloto (el spec no lo pide).
   - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan; la e2e da 68 passed en tres corridas seguidas.
 - **Ajuste a las reglas de contexto:** el README documenta el copiloto, `RAG_MIN_SIMILARITY` y que Ollama se usa en `OLLAMA_URL/v1`.
+
+---
+
+### 2026-10-13 — UI — Tailwind y componentes compartidos
+- **Herramienta / agente:** Claude Code (orquestador), `builder` x3 y `reviewer`
+- **Prompt o comando:** "Armemos el plan de implementacion para mejorar la UI de la aplicacion. Deberias de utilziar tailwind"
+- **Qué propuso el agente:** agregar `tailwindcss` y `@tailwindcss/vite` (devDependencies; el CSS plano no da un sistema de diseño consistente en 13 componentes), componentes presentacionales en `frontend/src/ui/` (Button, Field, Alert, Badge, Card, table) y reestilizar todas las pantallas sin tocar comportamiento, textos ni `data-testid`. Tareas T1-T8 en `odd/tasks/ui-tailwind.md`.
+- **Qué falló y qué capa lo detectó:** nada falló. El `reviewer` no halló bloqueantes; `make verify` y `make e2e` (68 passed) en verde tras cada grupo de tareas.
+- **Corrección / decisión:** sin tabs ni `hidden` responsive, porque los e2e usan `toBeVisible` sobre las secciones. El badge "Escalado" pasó de `<strong>` a `<span>` (no hay e2e que dependa del tag). Revisión nativa omitida por el usuario en los tres candidatos. Mejoras del reviewer sin aplicar: `postmortemTone` en `tones.ts`, estilos `focus-visible` y confirmar visualmente el `Field` dentro de `<p>` en `IncidentDetail`.
+- **Ajuste a las reglas de contexto:** ninguno.

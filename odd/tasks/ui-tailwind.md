@@ -21,15 +21,16 @@ Add Tailwind CSS (v4, `@tailwindcss/vite`) and restyle the frontend with shared 
 - [x] T3 App layout (`App.tsx`)
 - [x] T4 Auth forms
 - [x] T5 Incidents (board, declare, detail, timeline, postmortem)
-- [ ] T6 Services, runbooks, metrics
-- [ ] T7 Copilot
-- [ ] T8 Bitácora entry and close
+- [x] T6 Services, runbooks, metrics
+- [x] T7 Copilot
+- [x] T8 Bitácora entry and close
 
 ## Route
 Delegated direct: one writer (`builder`) per task group (writer trigger: 2+ non-trivial files).
 
 ## Progress / evidence
 T1-T3 via builder (delegated). make verify observed green (parent spot check). T4-T5 via builder: make verify green (spot check, exit 0), make e2e 68 passed (builder report). Escalado badge now span instead of strong (e2e green).
+T6-T7 via builder: make verify exit 0 (spot check), make e2e 68 passed (builder report). reviewer: no blockers; optional improvements listed in bitacora. Commits: c4cc3ec, 0bdc169, cf4e4a8, 318ee2c, f72f51a, a8b13ac.
 
 ## Next step
-T6 + T7 via builder.
+Done. Pending: user decision on push / PR.
