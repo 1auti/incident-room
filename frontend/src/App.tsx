@@ -3,6 +3,7 @@ import { AuthGate } from './features/auth/AuthGate'
 import { IncidentBoard } from './features/incidents/IncidentBoard'
 import { IncidentDetail } from './features/incidents/IncidentDetail'
 import { DeclareIncidentForm } from './features/incidents/DeclareIncidentForm'
+import { MetricsDashboard } from './features/metrics/MetricsDashboard'
 import { ServicesPage } from './features/services/ServicesPage'
 
 export default function App() {
@@ -27,6 +28,7 @@ export default function App() {
             />
           )}
           <DeclareIncidentForm />
+          <MetricsDashboard />
         </main>
       )}
     </AuthGate>

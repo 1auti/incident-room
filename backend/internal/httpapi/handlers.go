@@ -8,11 +8,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/metrics"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -62,18 +64,24 @@ type Timeline interface {
 	ChangeSeverity(ctx context.Context, actor user.User, incidentID string, to incident.Severity) (incident.Incident, error)
 }
 
+// Metrics is the dashboard behavior the handlers need.
+type Metrics interface {
+	Dashboard(ctx context.Context, actor user.User, q metrics.Query) (metrics.Dashboard, error)
+}
+
 type handlers struct {
 	users     Users
 	auth      Auth
 	services  Services
 	incidents Incidents
 	timeline  Timeline
+	metrics   Metrics
 	logger    *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, logger: logger}
+func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, m Metrics, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, metrics: m, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
@@ -98,6 +106,8 @@ func New(users Users, authn Auth, services Services, incidents Incidents, tl Tim
 	mux.Handle("PATCH /api/incidents/{id}/severity", requireAuth(http.HandlerFunc(h.changeSeverity)))
 	// Timeline events are append-only (BR-09): no method may touch a single event.
 	mux.Handle("/api/incidents/{id}/timeline/{eventID}", requireAuth(http.HandlerFunc(eventsAreImmutable)))
+	// Every authenticated user sees the dashboard (BR-10).
+	mux.Handle("GET /api/metrics", requireAuth(http.HandlerFunc(h.dashboard)))
 	mux.Handle("GET /api/users", requireAuth(requireAdmin(http.HandlerFunc(h.listUsers))))
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
@@ -340,6 +350,46 @@ func eventsAreImmutable(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "timeline events are append-only")
 }
 
+// dashboard reads ?period=<n>d or a free range ?from=&to= (RFC 3339); with
+// neither the service applies its default period. Which presets exist is the
+// service's decision (ErrInvalidPeriod).
+func (h *handlers) dashboard(w http.ResponseWriter, r *http.Request) {
+	params := r.URL.Query()
+	var q metrics.Query
+	if p := params.Get("period"); p != "" {
+		digits, ok := strings.CutSuffix(p, "d")
+		days, err := strconv.Atoi(digits)
+		if !ok || err != nil || days <= 0 {
+			writeError(w, http.StatusBadRequest, "period must be 7d or 30d")
+			return
+		}
+		q.LastDays = days
+	}
+	for _, f := range []struct {
+		name string
+		dst  *time.Time
+	}{{"from", &q.From}, {"to", &q.To}} {
+		name, dst := f.name, f.dst
+		v := params.Get(name)
+		if v == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, name+" must be an RFC 3339 instant")
+			return
+		}
+		*dst = t
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	d, err := h.metrics.Dashboard(r.Context(), actor, q)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
 func (h *handlers) suggestSeverity(w http.ResponseWriter, r *http.Request) {
 	actor, _ := auth.UserFromContext(r.Context())
 	q := r.URL.Query()
@@ -431,6 +481,8 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "incident not found")
 	case errors.Is(err, incident.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid state transition")
+	case errors.Is(err, metrics.ErrInvalidPeriod):
+		writeError(w, http.StatusBadRequest, "invalid period: use period=7d|30d or both from and to with from before to, not both")
 	case errors.Is(err, incident.ErrRootCauseRequired):
 		writeError(w, http.StatusBadRequest, "invalid transition: resolving requires a non-empty root_cause")
 	case errors.Is(err, incident.ErrPostmortemRequired):
