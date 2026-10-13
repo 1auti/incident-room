@@ -229,6 +229,104 @@ func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, t
 	return inc, nil
 }
 
+// ListEvents returns the timeline of an incident in chronological order by
+// occurred_at (BR-09), with the author's name; system events have none.
+func (r *PostgresRepository) ListEvents(ctx context.Context, incidentID string) ([]EventView, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT e.id, e.incident_id, e.type, e.author_id, e.body, e.data, e.occurred_at, u.name
+		FROM timeline_events e LEFT JOIN users u ON u.id = e.author_id
+		WHERE e.incident_id = $1
+		ORDER BY e.occurred_at, e.id`, incidentID)
+	if err != nil {
+		return nil, fmt.Errorf("list events: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (EventView, error) {
+		var v EventView
+		var typ string
+		if err := row.Scan(&v.ID, &v.IncidentID, &typ, &v.AuthorID, &v.Body, &v.Data, &v.OccurredAt, &v.AuthorName); err != nil {
+			return EventView{}, err
+		}
+		v.Type, v.OccurredAt = EventType(typ), v.OccurredAt.UTC()
+		if v.Data == nil {
+			v.Data = map[string]string{}
+		}
+		return v, nil
+	})
+	if pgErrCode(err) == pgInvalidTextRepresen {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list events: %w", err)
+	}
+	return out, nil
+}
+
+// AppendEvent inserts one event into an incident timeline; ErrNotFound when
+// the incident does not exist.
+func (r *PostgresRepository) AppendEvent(ctx context.Context, incidentID string, ev TimelineEvent) (TimelineEvent, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return TimelineEvent{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	out, err := insertEvent(ctx, tx, incidentID, ev)
+	if code := pgErrCode(err); code == pgForeignKeyViolation || code == pgInvalidTextRepresen {
+		return TimelineEvent{}, ErrNotFound
+	}
+	if err != nil {
+		return TimelineEvent{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return TimelineEvent{}, fmt.Errorf("commit: %w", err)
+	}
+	return out, nil
+}
+
+// ChangeSeverity sets the severity from -> to and stores ev in one transaction.
+// The update is conditional on the incident still having severity from and
+// being in one of the mutable states, so a concurrent transition or severity
+// change cannot slip through: then it returns ErrSeverityLocked (BR-02), or
+// ErrNotFound when the incident does not exist.
+func (r *PostgresRepository) ChangeSeverity(ctx context.Context, id string, from, to Severity, mutable []State, ev TimelineEvent) (Incident, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return Incident{}, fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	states := make([]string, len(mutable))
+	for i, st := range mutable {
+		states[i] = string(st)
+	}
+	inc, err := scanIncident(tx.QueryRow(ctx, `UPDATE incidents SET severity = $1
+		WHERE id = $2 AND severity = $3 AND state = ANY($4) RETURNING `+incidentColumns,
+		string(to), id, string(from), states))
+	if pgErrCode(err) == pgInvalidTextRepresen {
+		return Incident{}, ErrNotFound
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM incidents WHERE id = $1)`, id).Scan(&exists); err != nil {
+			return Incident{}, fmt.Errorf("check incident: %w", err)
+		}
+		if !exists {
+			return Incident{}, ErrNotFound
+		}
+		return Incident{}, ErrSeverityLocked
+	}
+	if err != nil {
+		return Incident{}, fmt.Errorf("update severity: %w", err)
+	}
+	if _, err := insertEvent(ctx, tx, id, ev); err != nil {
+		return Incident{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Incident{}, fmt.Errorf("commit: %w", err)
+	}
+	return inc, nil
+}
+
 // insertEvent appends one timeline event; events are only ever inserted (BR-09).
 func insertEvent(ctx context.Context, tx pgx.Tx, incidentID string, e TimelineEvent) (TimelineEvent, error) {
 	data := e.Data

@@ -350,3 +350,77 @@ func TestPostgres_EscalarEsCondicionalYUnico(t *testing.T) {
 		t.Errorf("pending after escalation = %+v, %v; want none", pending, err)
 	}
 }
+
+func TestPostgres_TimelineSoloInsertaYOrdena(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := incident.NewPostgresRepository(pool)
+	s := seedBase(t, pool)
+	declared := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	id := insertIncident(t, pool, s, incident.StateMitigating, incident.SeveritySEV2, declared)
+
+	// Inserted out of chronological order: the listing sorts by occurred_at (BR-09).
+	late := incident.TimelineEvent{Type: incident.EventNote, AuthorID: &s.userID, Body: "tarde", OccurredAt: declared.Add(20 * time.Minute)}
+	system := incident.TimelineEvent{Type: incident.EventEscalation, OccurredAt: declared.Add(15 * time.Minute)}
+	for _, ev := range []incident.TimelineEvent{late, system} {
+		if _, err := repo.AppendEvent(c, id, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := repo.ListEvents(c, id)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("ListEvents = %+v, %v", events, err)
+	}
+	if events[0].Type != incident.EventEscalation || events[0].AuthorID != nil || events[0].AuthorName != nil {
+		t.Errorf("first = %+v, want the system escalado without author", events[0])
+	}
+	if events[1].Body != "tarde" || events[1].AuthorName == nil || *events[1].AuthorName != "Ana" ||
+		!events[1].OccurredAt.Equal(late.OccurredAt) || events[1].OccurredAt.Location() != time.UTC || events[1].Data == nil {
+		t.Errorf("second = %+v, want the note by Ana in UTC", events[1])
+	}
+
+	for _, bad := range []string{"nope", "00000000-0000-0000-0000-000000000000"} {
+		if _, err := repo.AppendEvent(c, bad, late); !errors.Is(err, incident.ErrNotFound) {
+			t.Errorf("AppendEvent %q err = %v, want ErrNotFound", bad, err)
+		}
+	}
+	if _, err := repo.ListEvents(c, "nope"); !errors.Is(err, incident.ErrNotFound) {
+		t.Errorf("ListEvents malformed id err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPostgres_CambioSeveridadEsCondicional(t *testing.T) {
+	c := context.Background()
+	pool := dbtest.Pool(t)
+	repo := incident.NewPostgresRepository(pool)
+	s := seedBase(t, pool)
+	declared := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	mutable := []incident.State{incident.StateDeclared, incident.StateAcknowledged, incident.StateMitigating}
+	ev := incident.TimelineEvent{Type: incident.EventSeverityChange, AuthorID: &s.userID, Data: map[string]string{"from": "SEV2", "to": "SEV1"}, OccurredAt: declared.Add(time.Hour)}
+
+	id := insertIncident(t, pool, s, incident.StateMitigating, incident.SeveritySEV2, declared)
+	got, err := repo.ChangeSeverity(c, id, incident.SeveritySEV2, incident.SeveritySEV1, mutable, ev)
+	if err != nil || got.Severity != incident.SeveritySEV1 || got.SuggestedSeverity != incident.SeveritySEV2 {
+		t.Fatalf("ChangeSeverity = %+v, %v; want SEV1 keeping suggested SEV2", got, err)
+	}
+	if n := countEvents(t, pool, id, incident.EventSeverityChange); n != 1 {
+		t.Errorf("cambio_severidad events = %d, want 1", n)
+	}
+	// Severity no longer SEV2: a stale change touches nothing.
+	if _, err := repo.ChangeSeverity(c, id, incident.SeveritySEV2, incident.SeveritySEV3, mutable, ev); !errors.Is(err, incident.ErrSeverityLocked) {
+		t.Errorf("stale from err = %v, want ErrSeverityLocked", err)
+	}
+
+	resolved := insertIncident(t, pool, s, incident.StateResolved, incident.SeveritySEV1, declared)
+	if _, err := repo.ChangeSeverity(c, resolved, incident.SeveritySEV1, incident.SeveritySEV2, mutable, ev); !errors.Is(err, incident.ErrSeverityLocked) {
+		t.Errorf("resuelto err = %v, want ErrSeverityLocked", err)
+	}
+	if inc, _ := repo.Get(c, resolved); inc.Severity != incident.SeveritySEV1 || countEvents(t, pool, resolved, incident.EventSeverityChange) != 0 {
+		t.Errorf("resuelto changed: %+v", inc)
+	}
+	for _, bad := range []string{"nope", "00000000-0000-0000-0000-000000000000"} {
+		if _, err := repo.ChangeSeverity(c, bad, incident.SeveritySEV2, incident.SeveritySEV1, mutable, ev); !errors.Is(err, incident.ErrNotFound) {
+			t.Errorf("ChangeSeverity %q err = %v, want ErrNotFound", bad, err)
+		}
+	}
+}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { getIncident, transitionIncident, type Incident } from '../../api/incidents'
+import { changeSeverity, getIncident, transitionIncident, type Incident, type Severity } from '../../api/incidents'
+import { IncidentTimeline } from './IncidentTimeline'
 
 interface Props {
   incidentId: string
@@ -19,6 +20,8 @@ interface Loaded {
 export function IncidentDetail({ incidentId, onClose }: Props) {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  // Bumped after every change to the incident so the timeline shows its new event.
+  const [timelineReloads, setTimelineReloads] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -43,6 +46,19 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
     try {
       const updated = await transitionIncident(incidentId, 'reconocido')
       setLoaded({ id: incidentId, incident: updated, error: null })
+      setTimelineReloads((n) => n + 1)
+    } catch (err) {
+      setActionError(messageOf(err))
+    }
+  }
+
+  // The backend decides who may change the severity and until which state (BR-02, BR-11).
+  async function updateSeverity(severity: Severity) {
+    setActionError(null)
+    try {
+      const updated = await changeSeverity(incidentId, severity)
+      setLoaded({ id: incidentId, incident: updated, error: null })
+      setTimelineReloads((n) => n + 1)
     } catch (err) {
       setActionError(messageOf(err))
     }
@@ -72,7 +88,19 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
             Estado: <span data-testid="incident-detail-state">{incident.state}</span>
           </p>
           <p>
-            Severidad: <span data-testid="incident-detail-severity">{incident.severity}</span>
+            Severidad: <span data-testid="incident-detail-severity">{incident.severity}</span>{' '}
+            <label>
+              Cambiar severidad
+              <select
+                data-testid="incident-detail-severity-select"
+                value={incident.severity}
+                onChange={(e) => void updateSeverity(e.target.value as Severity)}
+              >
+                <option value="SEV1">SEV1</option>
+                <option value="SEV2">SEV2</option>
+                <option value="SEV3">SEV3</option>
+              </select>
+            </label>
           </p>
           <p>
             Asignado a: <span data-testid="incident-detail-assigned-to">{incident.assigned_to ?? 'Sin asignar'}</span>
@@ -83,6 +111,7 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
               Acknowledge
             </button>
           )}
+          <IncidentTimeline incidentId={incidentId} reloadToken={timelineReloads} />
         </div>
       )}
     </section>

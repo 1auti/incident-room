@@ -26,6 +26,7 @@ import (
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/service"
+	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
 	"incident-room-backend/migrations"
 )
@@ -74,7 +75,9 @@ func run() error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	serviceMgr := service.NewManager(service.NewPostgresRepository(pool), userRepo, time.Now)
-	incidentSvc := incident.NewService(incident.NewPostgresRepository(pool), time.Now, sla)
+	incidentRepo := incident.NewPostgresRepository(pool)
+	incidentSvc := incident.NewService(incidentRepo, time.Now, sla)
+	timelineSvc := timeline.NewService(incidentRepo, time.Now)
 
 	if email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && password != "" {
 		if err := userSvc.EnsureAdmin(ctx, email, password); err != nil {
@@ -103,7 +106,7 @@ func run() error {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, logger), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, logger), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
 

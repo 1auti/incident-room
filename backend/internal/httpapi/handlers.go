@@ -14,6 +14,7 @@ import (
 	"incident-room-backend/internal/auth"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/service"
+	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
 )
 
@@ -54,17 +55,25 @@ type Incidents interface {
 	Transition(ctx context.Context, actor user.User, id string, to incident.State) (incident.Incident, error)
 }
 
+// Timeline is the timeline behavior the handlers need.
+type Timeline interface {
+	List(ctx context.Context, actor user.User, incidentID string) ([]incident.EventView, error)
+	AddNote(ctx context.Context, actor user.User, incidentID, body string) (incident.TimelineEvent, error)
+	ChangeSeverity(ctx context.Context, actor user.User, incidentID string, to incident.Severity) (incident.Incident, error)
+}
+
 type handlers struct {
 	users     Users
 	auth      Auth
 	services  Services
 	incidents Incidents
+	timeline  Timeline
 	logger    *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, services Services, incidents Incidents, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, logger: logger}
+func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
@@ -82,6 +91,13 @@ func New(users Users, authn Auth, services Services, incidents Incidents, logger
 	mux.Handle("GET /api/incidents/{id}", requireAuth(http.HandlerFunc(h.getIncident)))
 	// The service decides who may transition (BR-08, BR-11): no RequireRole here.
 	mux.Handle("POST /api/incidents/{id}/transitions", requireAuth(http.HandlerFunc(h.transitionIncident)))
+	// Every authenticated user reads timelines and adds notes (BR-10); the
+	// service decides who may change the severity (BR-02, BR-11).
+	mux.Handle("GET /api/incidents/{id}/timeline", requireAuth(http.HandlerFunc(h.listTimeline)))
+	mux.Handle("POST /api/incidents/{id}/notes", requireAuth(http.HandlerFunc(h.addNote)))
+	mux.Handle("PATCH /api/incidents/{id}/severity", requireAuth(http.HandlerFunc(h.changeSeverity)))
+	// Timeline events are append-only (BR-09): no method may touch a single event.
+	mux.Handle("/api/incidents/{id}/timeline/{eventID}", requireAuth(http.HandlerFunc(eventsAreImmutable)))
 	mux.Handle("GET /api/users", requireAuth(requireAdmin(http.HandlerFunc(h.listUsers))))
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
@@ -271,6 +287,58 @@ func (h *handlers) transitionIncident(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, inc)
 }
 
+func (h *handlers) listTimeline(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	events, err := h.timeline.List(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if events == nil {
+		events = []incident.EventView{}
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+func (h *handlers) addNote(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Body string `json:"body"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	ev, err := h.timeline.AddNote(r.Context(), actor, r.PathValue("id"), in.Body)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, ev)
+}
+
+func (h *handlers) changeSeverity(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Severity incident.Severity `json:"severity"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	inc, err := h.timeline.ChangeSeverity(r.Context(), actor, r.PathValue("id"), in.Severity)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inc)
+}
+
+// eventsAreImmutable answers 405 with an empty Allow: no method is allowed on
+// a single timeline event (BR-09).
+func eventsAreImmutable(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Allow", "")
+	writeError(w, http.StatusMethodNotAllowed, "timeline events are append-only")
+}
+
 func (h *handlers) suggestSeverity(w http.ResponseWriter, r *http.Request) {
 	actor, _ := auth.UserFromContext(r.Context())
 	q := r.URL.Query()
@@ -362,6 +430,10 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "incident not found")
 	case errors.Is(err, incident.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid state transition")
+	case errors.Is(err, incident.ErrSeverityLocked):
+		writeError(w, http.StatusConflict, "severity can no longer change: the incident is resuelto or cerrado, or its severity changed meanwhile")
+	case errors.Is(err, timeline.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid input: a note needs a non-empty body and severity must be SEV1, SEV2 or SEV3 and differ from the current one")
 	case errors.Is(err, incident.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, user.ErrOncallAssigned):

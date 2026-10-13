@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
 	"incident-room-backend/internal/service"
+	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
 )
 
@@ -298,6 +300,49 @@ func (f *fakeIncidentRepo) UpdateState(_ context.Context, id string, from, to in
 	return incident.Incident{}, incident.ErrNotFound
 }
 
+func (f *fakeIncidentRepo) ListEvents(_ context.Context, incidentID string) ([]incident.EventView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []incident.EventView
+	for _, e := range f.events {
+		if e.IncidentID == incidentID {
+			out = append(out, incident.EventView{TimelineEvent: e})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeIncidentRepo) AppendEvent(_ context.Context, incidentID string, ev incident.TimelineEvent) (incident.TimelineEvent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// Like the incident foreign key of the real repository.
+	if !slices.ContainsFunc(f.incidents, func(inc incident.Incident) bool { return inc.ID == incidentID }) {
+		return incident.TimelineEvent{}, incident.ErrNotFound
+	}
+	ev.ID = fmt.Sprintf("ev-%d", len(f.events)+1)
+	ev.IncidentID = incidentID
+	f.events = append(f.events, ev)
+	return ev, nil
+}
+
+func (f *fakeIncidentRepo) ChangeSeverity(_ context.Context, id string, from, to incident.Severity, mutable []incident.State, ev incident.TimelineEvent) (incident.Incident, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.incidents {
+		if f.incidents[i].ID != id {
+			continue
+		}
+		if f.incidents[i].Severity != from || !slices.Contains(mutable, f.incidents[i].State) {
+			return incident.Incident{}, incident.ErrSeverityLocked
+		}
+		f.incidents[i].Severity = to
+		ev.IncidentID = id
+		f.events = append(f.events, ev)
+		return f.incidents[i], nil
+	}
+	return incident.Incident{}, incident.ErrNotFound
+}
+
 var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 type env struct {
@@ -318,7 +363,8 @@ func newEnv(t *testing.T) *env {
 	as := auth.NewService(users, sessions, time.Hour, time.Now)
 	incidents := &fakeIncidentRepo{services: services}
 	is := incident.NewService(incidents, func() time.Time { return fixedNow }, incident.DefaultSLA())
-	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ts := timeline.NewService(incidents, func() time.Time { return fixedNow })
+	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents}
 }
 
@@ -429,6 +475,9 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 		{"PATCH", "/api/users/id-ana@x.com/role", `{"role":"admin"}`},
 		{"POST", "/api/incidents", `{"title":"x","service_id":"svc-1","impact":"menor"}`},
 		{"GET", "/api/incidents/suggested-severity?service_id=svc-1&impact=menor", ""},
+		{"GET", "/api/incidents/inc-1/timeline", ""},
+		{"POST", "/api/incidents/inc-1/notes", `{"body":"hola"}`},
+		{"PATCH", "/api/incidents/inc-1/severity", `{"severity":"SEV1"}`},
 	} {
 		w := e.do(tc.method, tc.path, tc.body, nil)
 		if w.Code != http.StatusUnauthorized {
@@ -985,5 +1034,99 @@ func TestBR19_NoQuitarOncallDeServicioPorAPI(t *testing.T) {
 	}
 	if got, _ := e.users.FindByID(context.Background(), userID("oli@x.com")); got.Role != user.RoleOncall {
 		t.Errorf("role = %s, want oncall kept", got.Role)
+	}
+}
+
+func TestUC05_TimelineYNotasPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	id := e.declareOn(t, eng, e.createService(t, admin, "Pagos"))
+	notes := "/api/incidents/" + id + "/notes"
+
+	for name, body := range map[string]string{"json invalido": `{`, "vacia": `{"body":"   "}`, "sin body": `{}`} {
+		if w := e.do("POST", notes, body, eng); w.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", name, w.Code)
+		}
+	}
+	if w := e.do("POST", "/api/incidents/nope/notes", `{"body":"x"}`, eng); w.Code != http.StatusNotFound {
+		t.Errorf("unknown incident status = %d, want 404", w.Code)
+	}
+	w := e.do("POST", notes, `{"body":"Reinicié el pod"}`, eng)
+	var note map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &note)
+	if w.Code != http.StatusCreated || note["type"] != "nota" || note["author_id"] != userID("ana@x.com") || note["occurred_at"] != "2026-10-01T10:00:00Z" {
+		t.Fatalf("note status = %d, body %s", w.Code, w.Body)
+	}
+
+	w = e.do("GET", "/api/incidents/"+id+"/timeline", "", eng)
+	var events []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &events); w.Code != http.StatusOK || err != nil || len(events) != 2 {
+		t.Fatalf("timeline status = %d, body %s", w.Code, w.Body)
+	}
+	if events[0]["type"] != "declaracion" || events[1]["type"] != "nota" {
+		t.Errorf("timeline types = %v, %v", events[0]["type"], events[1]["type"])
+	}
+	if w := e.do("GET", "/api/incidents/nope/timeline", "", eng); w.Code != http.StatusNotFound {
+		t.Errorf("unknown timeline status = %d, want 404", w.Code)
+	}
+}
+
+func TestBR09_EventosNoSeModificanPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	id := e.declareOn(t, eng, e.createService(t, admin, "Pagos"))
+	before := e.incidents.events[0]
+	path := "/api/incidents/" + id + "/timeline/" + before.ID
+	for _, method := range []string{"PUT", "PATCH", "DELETE"} {
+		if w := e.do(method, path, `{"body":"editado"}`, admin); w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s admin status = %d, want 405", method, w.Code)
+		}
+		// Without session the route is protected like every other one (BR-10).
+		if w := e.do(method, path, `{"body":"editado"}`, nil); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s sin sesion status = %d, want 401", method, w.Code)
+		}
+	}
+	if len(e.incidents.events) != 1 || !reflect.DeepEqual(e.incidents.events[0], before) {
+		t.Errorf("event changed: %+v, want %+v", e.incidents.events, before)
+	}
+}
+
+func TestUC05_CambioSeveridadPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+	svcID := e.createService(t, admin, "Pagos")
+	if w := e.do("PUT", "/api/services/"+svcID+"/oncall", `{"user_id":"`+userID("oli@x.com")+`"}`, admin); w.Code != http.StatusOK {
+		t.Fatalf("assign status = %d", w.Code)
+	}
+	id := e.declareOn(t, eng, svcID)
+	path := "/api/incidents/" + id + "/severity"
+
+	if w := e.do("PATCH", path, `{"severity":"SEV1"}`, eng); w.Code != http.StatusForbidden {
+		t.Errorf("ingeniero status = %d, want 403", w.Code)
+	}
+	for name, body := range map[string]string{"json invalido": `{`, "desconocida": `{"severity":"SEV9"}`, "misma": `{"severity":"SEV3"}`} {
+		if w := e.do("PATCH", path, body, oncall); w.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", name, w.Code)
+		}
+	}
+	w := e.do("PATCH", path, `{"severity":"SEV1"}`, oncall)
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if w.Code != http.StatusOK || got["severity"] != "SEV1" {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body)
+	}
+	last := e.incidents.events[len(e.incidents.events)-1]
+	if last.Type != incident.EventSeverityChange || last.Data["from"] != "SEV3" || last.Data["to"] != "SEV1" {
+		t.Errorf("last event = %+v, want cambio_severidad SEV3 -> SEV1", last)
+	}
+
+	// From resuelto on the severity is fixed, even for the admin (BR-02).
+	e.incidents.incidents[0].State = incident.StateResolved
+	events := len(e.incidents.events)
+	if w := e.do("PATCH", path, `{"severity":"SEV2"}`, admin); w.Code != http.StatusConflict {
+		t.Errorf("resuelto status = %d, want 409", w.Code)
+	}
+	if e.incidents.incidents[0].Severity != incident.SeveritySEV1 || len(e.incidents.events) != events {
+		t.Errorf("rejected change had effects: %+v", e.incidents.incidents[0])
 	}
 }
