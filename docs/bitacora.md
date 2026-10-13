@@ -286,3 +286,25 @@ Una entrada por iteración relevante. Es la materia prima del README.
   - Quedan sin aplicar: los tests BR-14 son guiones y no tablas (hay precedente en el repo), y el panel no refresca el tablero después de una acción del copiloto (el spec no lo pide).
   - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan; la e2e da 68 passed en tres corridas seguidas.
 - **Ajuste a las reglas de contexto:** el README documenta el copiloto, `RAG_MIN_SIMILARITY` y que Ollama se usa en `OLLAMA_URL/v1`.
+
+### 2026-10-13 — Documentación — README final y `docs/ARCHITECTURE.md`
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Que nos falta para terminar" y luego "dale, arrancá con el README y ARCHITECTURE.md"
+- **Qué propuso el agente:**
+  - **Diagnóstico:** el código está completo y mergeado; lo que falta es lo que la consigna evalúa aparte. El README seguía describiendo la etapa de diseño, no tenía UC-11 ni BR-20, no explicaba la cadena de agentes ni los prompts clave, y `docs/ARCHITECTURE.md` no existía.
+  - **`docs/ARCHITECTURE.md`:** componentes, paquetes por caso de uso, decisiones que protegen invariantes, flujo del copiloto, niveles de prueba y decisiones pendientes (despliegue en producción, purga de sesiones).
+  - **README:** estado actual, UC-11 y por qué apareció, resumen de arquitectura, tabla de agentes y comandos, prompts clave, la fila del pre-commit corregida, configuración de los MCP y uso de LangChainGo en el copiloto.
+  - **`AGENTS.md`:** `docs/ARCHITECTURE.md` deja de estar marcado como pendiente.
+- **Qué falló y qué capa lo detectó:**
+  - (1) **`make verify` falló en el contenedor nuevo** por el mismo `golangci-lint` compilado con Go 1.25 que se había registrado en UC-08. Es un problema del entorno. Build, vet, tests y la verificación del frontend pasaron.
+  - (2) **El README describía mal el pre-commit:** decía que corría `make verify`, pero desde el trabajo de tooling corre chequeos solo sobre lo staged. Lo detecté al contrastar el README con `.githooks/pre-commit`.
+  - (3) **El `reviewer` encontró tres BLOQUEANTES, todos afirmaciones falsas:**
+    - atribuía al `reviewer` dos carreras con el LLM, cuando en UC-10 el problema fue la pérdida de acciones;
+    - decía que hubo elección entre dos opciones en todos los casos de uso de UC-05 a UC-10;
+    - decía que todo paquete tiene su `postgres.go`, cuando `timeline` usa el repositorio de `incident`.
+  - (4) **El `reviewer` también marcó estas mejoras:** nombrar la interfaz `timeline.Repository`, acotar el uso de la cadena de agentes a lo que consta en la bitácora y mencionar `dbtest`.
+- **Corrección / decisión:**
+  - (2) La fila del pre-commit describe lo que hace hoy el hook.
+  - (3) y (4) Se corrigieron todas.
+  - No se tomó ninguna decisión de arquitectura nueva: el despliegue en producción sigue pendiente y quedó documentado como tal.
+- **Ajuste a las reglas de contexto:** `AGENTS.md` ya no marca `docs/ARCHITECTURE.md` como pendiente, así que los agentes lo leen como tercera fuente de verdad.

@@ -4,7 +4,7 @@ Plataforma web para declarar, triagear y resolver incidentes de producción, ins
 
 Trabajo Práctico Integrador. El foco de la evaluación es la orquestación del entorno de trabajo (AI Engineering) y la funcionalidad entregada.
 
-> **Estado:** etapa de diseño cerrada (dominio y 10 specs); backend y frontend inicializados, casos de uso en implementación. Las secciones marcadas **(pendiente)** se completan a medida que avanza el desarrollo.
+> **Estado:** los 10 casos de uso propuestos y UC-11 (gestión de servicios, agregado durante el desarrollo) están implementados, con pruebas unitarias, SQL y E2E por criterio de aceptación.
 
 ## Equipo
 
@@ -24,7 +24,7 @@ Trabajo Práctico Integrador. El foco de la evaluación es la orquestación del 
 
 ## Casos de uso
 
-Cada caso tiene su spec con criterios de aceptación Dado/cuando/entonces, en `specs/`. Las reglas de negocio con ID (BR-01 a BR-19) están en [`docs/domain.md`](docs/domain.md).
+Cada caso tiene su spec con criterios de aceptación Dado/cuando/entonces, en `specs/`. Las reglas de negocio con ID (BR-01 a BR-20) están en [`docs/domain.md`](docs/domain.md).
 
 | UC | Caso de uso | Prioridad | Spec |
 |---|---|---|---|
@@ -38,25 +38,37 @@ Cada caso tiene su spec con criterios de aceptación Dado/cuando/entonces, en `s
 | 08 | Postmortem asistido por LLM | secundario | [UC-08](specs/UC-08-postmortem-asistido.md) |
 | 09 | Dashboard de métricas (MTTR, incidentes por servicio, SLA) | núcleo | [UC-09](specs/UC-09-dashboard-metricas.md) |
 | 10 | Copiloto conversacional (RAG y tool calling) | obligatorio (criterio chatbot) | [UC-10](specs/UC-10-copiloto-conversacional.md) |
+| 11 | Gestión de servicios (alta, edición, baja y criticidad) | secundario | [UC-11](specs/UC-11-gestion-servicios.md) |
+
+UC-11 no estaba entre los 10 propuestos. Al planificar UC-02 apareció que ningún spec cubría crear servicios, aunque UC-02, UC-04, UC-07 y UC-09 los necesitan. El agente frenó y preguntó, como pide `AGENTS.md`, y el spec se escribió con las decisiones del usuario (bitácora del 2026-10-01).
 
 ## Arquitectura
 
-Backend por capas: `handler → service → repository`.
+```
+Navegador ──> Frontend (React + Vite) ──/api──> Backend Go (net/http) ──> PostgreSQL + pgvector
+                                                    ├──> Ollama: embeddings
+                                                    └──> Chat compatible con OpenAI: Ollama o Groq
+```
 
-- **handler:** decodifica, valida formato y traduce errores de dominio a HTTP.
-- **service:** todas las reglas de negocio (BR-xx).
-- **repository:** SQL.
+El backend está organizado por capas: `handler → service → repository`.
 
-Decisiones de diseño que hacen imposibles de violar dos invariantes:
+- **handler** (`internal/httpapi`): decodifica, valida el formato y traduce los errores de dominio a HTTP.
+- **service:** concentra todas las reglas de negocio (BR-xx). Hay un paquete por área del dominio en `internal/`.
+- **repository:** el SQL, en el `postgres.go` de cada paquete con persistencia.
+
+Algunas decisiones de diseño hacen que ciertas invariantes no se puedan violar:
 
 - **Timeline append-only (BR-09):** el repositorio de eventos solo expone inserción y consultas; no existe Update ni Delete.
 - **Transiciones (BR-08):** una tabla explícita estado → destinos válidos, consultada por una única función.
-- **Reloj inyectable (BR-05):** el dominio recibe el instante actual, para testear vencimientos de SLA.
-- **Copiloto (BR-14):** las tools llaman a `service`, nunca a SQL; las reglas aplican igual por chat que por UI.
+- **Reloj inyectable (BR-05):** el dominio recibe el instante actual, así se pueden testear los vencimientos de SLA.
+- **Copiloto (BR-14):** las herramientas llaman a los services, nunca al SQL, así que las reglas aplican igual por chat que por UI.
 
-Máquina de estados: `Declarado → Reconocido → Mitigando → Resuelto → Cerrado` (sin reapertura ni saltos). Reglas clave: resolver exige causa raíz (BR-06); cerrar un SEV1 exige postmortem aprobado (BR-07); si vence el SLA sin reconocimiento se escala a los admins (BR-04).
+Máquina de estados: `Declarado → Reconocido → Mitigando → Resuelto → Cerrado`, sin reapertura ni saltos. Reglas clave:
+- resolver exige causa raíz (BR-06);
+- cerrar un SEV1 exige un postmortem aprobado (BR-07);
+- si vence el SLA sin reconocimiento, el incidente se escala a los admins (BR-04).
 
-Detalle en [`docs/domain.md`](docs/domain.md) y en las reglas por carpeta (`backend/AGENTS.md`, `frontend/AGENTS.md`). El documento de arquitectura `docs/ARCHITECTURE.md` está **(pendiente)**.
+El detalle de los componentes, los paquetes, las decisiones y lo que queda pendiente (cómo se sirve en producción) está en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Las reglas de negocio están en [`docs/domain.md`](docs/domain.md).
 
 ## AI Engineering
 
@@ -66,7 +78,41 @@ Detalle en [`docs/domain.md`](docs/domain.md) y en las reglas por carpeta (`back
 - Reglas específicas por lenguaje en `backend/AGENTS.md` y `frontend/AGENTS.md`.
 - Orden de fuentes de verdad: `specs/` → `docs/domain.md` → `docs/ARCHITECTURE.md`. Si algo no está cubierto o se contradice, el agente frena y pregunta; no inventa reglas de negocio.
 - Flujo de trabajo obligatorio: explorar, planificar (con aprobación), implementar lo mínimo, verificar, revisar, registrar.
-- Comando `/implement-uc UC-XX` (`.claude/commands/`) y subagente `reviewer` (`.claude/agents/`), que revisa el diff contra el spec y las reglas de dominio.
+- Reglas de código que guían patrones de diseño: interfaces en el paquete que las consume, inyección por constructor, sin estado global, una prueba table-driven por regla con el ID BR-xx en el nombre, y nada de patrón State para las transiciones.
+
+### Agentes y comandos
+
+Cada agente tiene una sola responsabilidad y el modelo que le alcanza para cumplirla. Las tareas baratas, como explorar y resumir, van a Haiku, y las decisiones de diseño van a Opus.
+
+| Agente (`.claude/agents/`) | Modelo | Herramientas | Rol |
+|---|---|---|---|
+| `writer` | Haiku | lectura y Bash | Explora el repo para un caso de uso y escribe el informe crudo: spec, reglas, código y pruebas relacionadas. |
+| `communicator` | Haiku | solo lectura | Condensa el informe en un brief corto para el architect. |
+| `architect` | Opus | solo lectura | Decide el diseño y entrega el plan: archivos, pruebas y riesgos. |
+| `builder` | Sonnet | edición y Bash | Implementa el plan aprobado (prueba primero en las reglas de negocio) y corre `make verify`. |
+| `reviewer` | heredado | lectura y Bash | Revisa el diff contra el spec, `domain.md` y los `AGENTS.md`, y separa los hallazgos BLOQUEANTES de las mejoras. |
+| `ask` | Haiku | solo lectura | Responde dudas puntuales sobre el repo, fuera de la cadena. |
+
+| Comando (`.claude/commands/`) | Qué hace |
+|---|---|
+| `/uc UC-XX` | Orquesta la cadena `writer → communicator → architect` y se detiene hasta que el usuario aprueba el plan; después sigue con `builder → reviewer`. |
+| `/implement-uc UC-XX` | Implementación directa por Claude Code, siguiendo el mismo flujo. |
+| `/delegate UC-XX` | Le pasa el plan aprobado a opencode con el agente `.opencode/agents/executor.md`, que tiene denegados commit, push, `rm`, `curl` y `.env*`. Claude verifica el resultado con `git diff`, `make verify` y el `reviewer`; no se confía en el reporte del ejecutor. |
+
+Ningún agente decide reglas de negocio: las dudas vuelven al usuario.
+
+### Prompts clave
+
+Cada uno está registrado en la bitácora con lo que propuso el agente y lo que falló.
+
+| Etapa | Prompt | Resultado |
+|---|---|---|
+| Diseño | Dominio primero, aprobación, después los specs | `docs/domain.md` con BR-01 a BR-18 y 14 preguntas abiertas explícitas en lugar de reglas inventadas. Con el dominio aprobado, los 10 specs. |
+| Diseño | "las 14 preguntas las tenés que resolver vos" | Las decisiones quedaron incorporadas en las reglas, con trazabilidad en la sección 6 de `domain.md`. Apareció BR-19. |
+| Herramientas | "me gustaría que trabajes para optimizar el uso de tokens…" | Medición previa a cualquier cambio. El hook Stop pasó a correr solo con cambios en fuentes, y se deduplicaron los comandos contra `AGENTS.md`. |
+| Herramientas | "mi idea es trabajar claude como orquestador y opencode como el que hace" | Agente `executor` de opencode y `/delegate` con contrato de handoff. Se probó en BR-01 (UC-02). |
+| Implementación | "vamos a crear una rama feature/caso de uso y implementarlo" | Un caso de uso por rama y por PR (#5 a #10), de UC-01 a UC-04 y UC-11. La cadena de agentes se usó en UC-01 (tramo T3) y en UC-11, según la bitácora. |
+| Implementación | "Implementa los casos de uso que faltan" | UC-05 a UC-10, uno por vez. Primero el plan; cuando había alternativas, el usuario eligió una ("Si, con A" en UC-08, "Si, con las dos A" en UC-10). Después, implementación directa más `reviewer`. |
 
 ### Metodología
 
@@ -78,11 +124,17 @@ Diseño primero, código después. Se produjeron `docs/domain.md` y los 10 specs
 |---|---|
 | Hook `post-edit` | Tras cada Edit/Write: `gofmt` y `go vet` en Go, `oxlint` en el frontend. Si falla, el error vuelve al agente en el mismo turno. |
 | Hook `Stop` | Al terminar una respuesta, si hubo cambios en código, ejecuta `make verify`. Un solo intento automático de corrección. |
-| `pre-commit` | `make verify`, independiente de la herramienta. Se activa con `make setup`. |
+| `pre-commit` | Corre solo sobre lo staged, independiente de la herramienta: `gofumpt`, `go vet` y las pruebas de los paquetes Go afectados; en el frontend, `oxlint`, `prettier --check` y el typecheck. Se activa con `make setup` o con el hook `SessionStart`. El `make verify` completo queda en el hook Stop (justificación en `docs/tooling-decisions.md`). |
+| `reviewer` | Después de cada caso de uso. Todo BLOQUEANTE se corrige antes del commit. Detectó, entre otros, una carrera entre el LLM y el cierre del incidente en UC-08, y en UC-10 la pérdida de las acciones ya ejecutadas cuando el modelo fallaba. |
 | Permisos | Se deniega leer `.env*`, `git commit --no-verify` y `git push --force`. |
 | Revisión nativa | Revisión adversarial con cuatro lentes (riesgo, resiliencia, legibilidad, confiabilidad) sobre cambios de riesgo medio o alto. |
 
 `make verify` es el único comando de verificación: build, vet, tests y lint del backend; lint y build (con typecheck) del frontend.
+
+### Qué se aprendió del loop
+
+- **Cada capa detectó errores distintos.** La e2e encontró un error de diseño del copiloto que la prueba unitaria no veía, porque su modelo fake no se comportaba como uno real. El `reviewer` encontró que un postmortem podía guardarse sobre un incidente cerrado mientras el LLM respondía. El hook Stop encontró un linter compilado con un Go más viejo que el del módulo.
+- **El reporte de un agente no es evidencia.** En la primera delegación, el ejecutor pegó una salida de `make verify` reescrita a mano. Desde entonces la verificación la repite siempre el orquestador.
 
 ### Bitácora
 
@@ -102,9 +154,17 @@ Configurados en `.mcp.json` (Claude Code) y `opencode.json` (opencode).
 | `playwright` | local (`npx`) | Validar en la UI cada criterio de aceptación de un caso de uso con interfaz. |
 | `postgres` | local (`uvx`), solo lectura | Verificar esquema y datos después de migraciones o cambios de reglas. Usa un usuario de solo lectura (`db/dev/agent-readonly.sql`). |
 
+Configuración:
+
+- **`context7`:** no necesita credenciales; es un servidor HTTP remoto.
+- **`playwright`:** usa los `data-testid` estables que `frontend/AGENTS.md` exige en todo elemento mencionado por un criterio de aceptación. Esos mismos selectores los usan las pruebas de `e2e/`.
+- **`postgres`:** corre `postgres-mcp` en `--access-mode=restricted` y lee la conexión de `AGENT_RO_DATABASE_URL`. Los agentes nunca reciben la URL de la API, y el rol se crea con `db/dev/init-agent-ro.sh`.
+
+Las reglas de contexto les indican a los agentes cuándo usar cada servidor (sección "Herramientas MCP" de `AGENTS.md`). Un servidor que no conecta no se reemplaza con suposiciones. Por ejemplo, en las sesiones en la nube `context7` recibió un 403 del proxy, y la API de LangChainGo se leyó del código fuente del módulo en lugar de asumir firmas (bitácora de UC-07).
+
 ## Copiloto conversacional
 
-`POST /api/copilot` responde preguntas sobre los runbooks con RAG y ejecuta tres herramientas por tool calling: abrir incidente, agregar nota y listar abiertos (UC-10).
+Construido con **LangChainGo** (`github.com/tmc/langchaingo`): `llms/openai` para el chat con tool calling y `embeddings` con `llms/ollama` para los vectores. `POST /api/copilot` responde preguntas sobre los runbooks con RAG y ejecuta tres herramientas por tool calling: abrir incidente, agregar nota y listar abiertos (UC-10).
 
 - **RAG:** la pregunta se convierte en embedding y se buscan hasta 3 runbooks por similitud coseno en pgvector, con un mínimo configurable con `RAG_MIN_SIMILARITY` (0.5 por defecto, calibrado para `nomic-embed-text`). Las fuentes que muestra la respuesta son los runbooks recuperados por el backend, no lo que diga el modelo.
 - **Sin runbook relevante y sin herramientas usadas**, la respuesta es fija: no encontró información y no propone un procedimiento. Así un modelo no puede inventar pasos ni contradecir la ausencia de herramientas para cerrar o transicionar.
@@ -131,11 +191,14 @@ Los secretos vienen del entorno; el proyecto no usa archivos `.env` en el reposi
 
 ```
 specs/         casos de uso y criterios de aceptación
-docs/          dominio, bitácora, consigna, optimización de tokens
-backend/       Go (cmd/api)
-frontend/      React + Vite + TypeScript
+docs/          arquitectura, dominio, bitácora, consigna, optimización de tokens
+backend/       Go: cmd/api (arranque), internal/ (un paquete por área), migrations/ (SQL embebido)
+frontend/      React + Vite + TypeScript (src/features/, src/api/)
+e2e/           Playwright: un spec por caso de uso y fake-ollama.mjs
+scripts/       dev, e2e, verify-db, verify-changed e instalación de herramientas
 db/dev/        SQL de desarrollo (usuario de solo lectura)
 .claude/       hooks, comandos y subagentes de Claude Code
+.opencode/     agente executor para /delegate
 .githooks/     pre-commit versionado
 odd/tasks/     seguimiento de las tareas de cada feature
 ```
