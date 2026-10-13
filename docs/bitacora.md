@@ -130,3 +130,159 @@ Una entrada por iteración relevante. Es la materia prima del README.
     - los tests Go, SQL incluidos, pasan contra un Postgres 16 local descartable;
     - la suite e2e completa da 37 passed en tres corridas.
 - **Ajuste a las reglas de contexto:** ninguno.
+
+### 2026-10-13 — UC-06 — Transiciones de estado T2–T4
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Si" al plan de UC-06; el usuario eligió la opción A: crear ya la tabla `postmortems`
+- **Qué propuso el agente:**
+  - **Migración `0006`:** agrega `root_cause`, `resolved_at` y `closed_at` a `incidents`, y crea la tabla `postmortems` con el esquema de `docs/domain.md`: `incident_id` único, sin cascade, y un CHECK que exige `approved_by` y `approved_at` cuando el estado es `aprobado`. UC-06 solo la lee; generar y aprobar postmortems llega con UC-08.
+  - **Transiciones:** el `map transitions` completa T1–T4 y todo sigue pasando por `Transition`, que ahora recibe `rootCause`. T3 recorta la causa y, si queda vacía, devuelve `ErrRootCauseRequired` (400). T4 de un SEV1 sin postmortem aprobado devuelve `ErrPostmortemRequired` (409).
+  - **Repositorio:** `UpdateState` recibe un `StateUpdate` con los campos opcionales y sigue siendo un UPDATE condicional más el evento en una sola transacción. El `cambio_estado` de T3 lleva la causa raíz en `body`.
+  - **UI:** una acción por estado (Acknowledge, Mitigar, Resolver con causa raíz y Cerrar) y se muestran `root_cause`, `resolved_at` y `closed_at`.
+- **Qué falló y qué capa lo detectó:**
+  - (1) Una segunda corrida de e2e dio 37 fallas porque reutilicé la base con un `ADMIN_EMAIL` nuevo: `EnsureAdmin` no crea un segundo admin (BR-19). El error fue mío al armar la corrida, no del código; `make e2e` siempre usa una base limpia. Lo detectó la corrida.
+  - (2) El `reviewer` no halló bloqueantes, pero sí un bug real: `IncidentDetail` se montaba sin `key` y la causa raíz escrita en un incidente quedaba en el textarea al abrir otro, donde "Resolver" la habría guardado.
+  - (3) El `reviewer` marcó además estas mejoras:
+    - se mandaba `root_cause` en todas las transiciones;
+    - a `TestBR05_TransicionesUsanRelojInyectable` le faltaba verificar la cantidad de eventos;
+    - los tests de UC-04 `TestBR08_TransicionesInvalidasSeRechazan` y `TestBR11_OncallAjenoNoReconoce` se superponían con los nuevos del spec;
+    - se guarda la causa raíz recortada, algo que BR-06 no pide explícitamente.
+- **Corrección / decisión:**
+  - (1) Las corridas siguientes usan una base recreada.
+  - (2) `key={selectedIncidentId}` en `App.tsx`.
+  - (3) `root_cause` solo se envía con `to === 'resuelto'` y se agregó el chequeo de cantidad de eventos.
+  - (3) Los dos tests viejos se fusionaron en los del spec: `ErrNotFound` pasó a `TestBR08_IncidenteInexistente` y T1 a la lista de pasos de BR-11.
+  - (3) El recorte de la causa raíz se mantiene, por el mismo criterio que las notas de UC-05; queda para que el usuario lo confirme.
+  - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan contra Postgres 16; la suite e2e da 43 passed en tres corridas con la base limpia.
+- **Ajuste a las reglas de contexto:** ninguno.
+
+### 2026-10-13 — UC-09 — Dashboard de métricas
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Dale" para armar el plan de UC-09; el usuario aprobó la opción A ("A, aprobado")
+- **Qué propuso el agente:**
+  - **Paquete `backend/internal/metrics`:** el repositorio trae filas filtradas por `[desde, hasta)` (por `resolved_at` para MTTR y por `declared_at` para conteo y SLA) y el service calcula las métricas en Go con el reloj inyectado, reutilizando `incident.SLA`.
+  - **MTTR (BR-16):** promedio de `resolved_at − declared_at`; `null` si no hay datos.
+  - **Conteo por servicio (BR-17):** incluye los servicios con 0.
+  - **SLA (BR-18):** un incidente es elegible si fue reconocido o si `ahora > plazo` (el mismo límite que usa BR-04), y cumple si `acknowledged_at ≤ plazo`. Sin elegibles, `null`.
+  - **API:** `GET /api/metrics?period=7d|30d` o `?from=&to=` en RFC 3339; sin parámetros, 30 días.
+  - **UI:** `MetricsDashboard` con los preajustes y un rango libre en días UTC con "hasta" incluido, que se envía como el día siguiente a las 00:00. Cuando no hay valor muestra "Sin datos", nunca 0.
+  - **E2E:** cada test carga datos por SQL en su propia ventana aleatoria de un día. UC-09.4 usa una ventana en el futuro para tener un incidente todavía dentro de plazo sin cruzarse con lo que los demás tests declaran en el momento actual.
+- **Qué falló y qué capa lo detectó:**
+  - (1) `golangci-lint` (unused) detectó un `Period.contains` muerto mío.
+  - (2) El Postgres local de pruebas se cayó entre UC-06 y UC-09, por un reinicio del contenedor; lo detectó un test SQL con "connection refused".
+  - (3) El `reviewer` no halló bloqueantes. Marcó como mejoras:
+    - los tests de BR-18 no eran table-driven;
+    - los preajustes estaban duplicados entre handler y service;
+    - el orden de `from` y `to` dependía de iterar un map;
+    - faltaba una fila sin resolver en el test SQL;
+    - la ventana vacía de UC-09.2 podía coincidir con otra.
+  - (4) El log del backend muestra `internal error ... context canceled` cuando el navegador cancela una petición al navegar. Viene de `RequireAuth` (UC-01), no de este cambio.
+- **Corrección / decisión:**
+  - (1) Se borró el método muerto.
+  - (2) Se relanzó el Postgres local.
+  - (3) Se aplicaron las mejoras: tabla con los bordes de BR-18 (en el plazo, 1 s tarde, vencido sin reconocer); el handler solo parsea `<n>d` y valida el service; `from`/`to` se leen en orden fijo; fila sin resolver en el test SQL; ventana vacía en su propio rango de años. Los tests de BR-16 y BR-17 siguen como escenarios únicos, igual que en el resto del repo.
+  - (4) Queda como deuda: `RequireAuth` debería tratar `context.Canceled` como cancelación del cliente y no loguearlo como error interno.
+  - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan; la e2e completa da 49 passed en tres corridas.
+- **Ajuste a las reglas de contexto:** ninguno.
+
+### 2026-10-13 — UC-07 — Gestión de runbooks con embeddings
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Si" al plan de UC-07: LangChainGo, fallo cerrado si Ollama no responde y un fake de Ollama en la frontera HTTP para la e2e
+- **Qué propuso el agente:**
+  - **Migración `0007`:** `CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public` y la tabla `runbooks`, con `service_id` como FK sin cascade (BR-20), CHECK de título y contenido no vacíos y `embedding public.vector(768) NOT NULL`.
+  - **Paquete `internal/runbook`:** un `Service` donde solo el admin gestiona y todo autenticado lee. Valida, embebe el **contenido** y verifica que el vector tenga 768 dimensiones antes de escribir; la baja es un `DELETE` físico, así que la fila y su embedding desaparecen juntos. Define su propia interfaz `Embedder`. El vector se envía como literal `'[…]'::public.vector`, sin `pgvector-go`.
+  - **Paquete `internal/llm`:** adaptador del embedder de LangChainGo v0.1.15 (`POST /api/embed`), con timeout de 30 s.
+  - **Configuración:** `OLLAMA_URL` y `EMBEDDING_MODEL`.
+  - **UI:** `RunbooksPanel` con la lista de cada servicio montada con `key={serviceId}`; los controles de gestión solo se muestran al admin.
+  - **E2E:** `e2e/fake-ollama.mjs` devuelve una bolsa de palabras hasheada de 768 dimensiones, determinista; Playwright lo levanta como `webServer` y el backend lo usa a través de `OLLAMA_URL`.
+  - **Deuda de UC-11 saldada:** `HasRunbooks` ahora es real y se agregó el e2e de UC-11.6 (un servicio con incidente o con runbook no se puede dar de baja).
+- **Qué falló y qué capa lo detectó:**
+  - (1) context7 no conecta (403 del proxy), así que la API de LangChainGo se leyó del código fuente del módulo.
+  - (2) El Postgres local no tenía pgvector; se instaló por apt después de actualizar el índice. La instalación detuvo el cluster, y lo detectaron los tests SQL con "connection refused".
+  - (3) `dbtest` usaba solo el schema del test como `search_path` y no veía el tipo `vector` instalado en `public`. Se previó al diseñar el plan.
+  - (4) El `reviewer` no halló bloqueantes. Sí marcó varias mejoras:
+    - `CREATE EXTENSION vector` requiere superusuario y eso no estaba documentado;
+    - el cast `::vector` no estaba calificado con el schema;
+    - `OLLAMA_URL`, `EMBEDDING_MODEL` y `ollama pull` faltaban en el README;
+    - el cliente de Ollama no tenía timeout;
+    - el contenido se guardaba recortado, lo que rompe la indentación de un procedimiento;
+    - el fake se caía con un JSON inválido;
+    - `runbook` depende de `incident.Authorize` solo para validar el rol.
+- **Corrección / decisión:**
+  - (3) El `search_path` pasó a ser `<schema>, public`.
+  - (4) Se aplicaron todas las mejoras salvo la última. `incident.Authorize` queda como la verificación de rol que ya comparten `timeline`, `metrics` y `runbook`.
+  - Pendiente para UC-10: verificar de punta a punta que el copiloto no recupera un runbook dado de baja (segunda mitad de UC-07.5).
+  - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan contra Postgres 16 con pgvector 0.6; la e2e da 56 passed en tres corridas.
+- **Ajuste a las reglas de contexto:** el README documenta la configuración de Ollama y el requisito de superusuario para pgvector.
+
+### 2026-10-13 — UC-08 — Postmortem asistido por LLM
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Si, con A" al plan de UC-08: el contenido es el análisis del LLM más una sección de timeline determinista; el chat se elige entre Groq y Ollama por entorno
+- **Qué propuso el agente:**
+  - **Paquete `internal/postmortem`:**
+    - **Generar:** solo con el incidente `resuelto`, y solo el on-call del servicio o el admin (`incident.CanOperate`). Crea el borrador o reemplaza el existente y agrega un evento `postmortem` `generado` o `regenerado`.
+    - **Editar:** mismos roles, solo en `borrador`, sin evento; el texto se guarda tal como se escribe.
+    - **Aprobar:** solo el admin; fija `approved_by` y `approved_at` con el reloj inyectado y agrega un evento `aprobado`. Un postmortem `aprobado` es inmutable (409).
+    - **Contenido (opción A):** el análisis del LLM más una sección "Timeline" que arma el service, así la cita de los eventos es determinista.
+    - El LLM se llama antes de abrir la transacción; si falla, responde 503 y no escribe nada.
+    - Las escrituras son condicionales a `borrador` y van en la misma transacción que su evento, con `incident.InsertEvent`, que se exportó para no duplicar la inserción append-only.
+  - **Paquete `internal/llm/chat.go`:** Ollama (`/api/chat`) o Groq (cliente OpenAI de LangChainGo), con timeout. Está probado contra servidores fake de los dos protocolos, porque no hay API key ni red hacia Groq.
+  - **Configuración:** `LLM_PROVIDER`, `LLM_MODEL`, `GROQ_API_KEY` y `LLM_BASE_URL`. El backend no arranca con Groq sin clave ni con un proveedor desconocido.
+  - **UI:** sección de postmortem en el detalle del incidente.
+  - **E2E:** `fake-ollama.mjs` suma `/api/chat`.
+  - **Sin migración nueva:** la tabla `postmortems` es de UC-06.
+- **Qué falló y qué capa lo detectó:**
+  - (1) El hook de cierre corrió `make verify` con el `golangci-lint` del contenedor, compilado con Go 1.25, que no carga un módulo 1.27. Problema del entorno, no del código.
+  - (2) El `reviewer` encontró un BLOQUEANTE: Generate verificaba el estado `resuelto` antes de llamar al LLM, que tarda hasta 2 minutos, y `CreateDraft`/`ReplaceDraft` no lo volvían a mirar. Un SEV2 o SEV3 cerrado mientras el LLM respondía recibía igual un borrador y su evento, contra BR-13.
+  - (3) El `reviewer` también marcó estas mejoras:
+    - Approve y Edit no tienen precondición de versión, así que el admin puede aprobar un texto que no vio;
+    - la UI quedaba con un estado viejo tras un 409;
+    - no había test de edición por el admin;
+    - faltaban las variables de chat en el README;
+    - un comentario de la e2e decía algo que no se probaba;
+    - un log futuro de `chatConfig` podía exponer `GROQ_API_KEY`.
+- **Corrección / decisión:**
+  - (1) Se instaló en `/usr/local/bin` un golangci-lint 2.14 compilado con Go 1.27, con copia de la versión original en el scratchpad.
+  - (2) `CreateDraft` y `ReplaceDraft` hacen `SELECT state … FOR SHARE` dentro de su transacción y devuelven `ErrIncidentNotResolved` si el incidente ya no está `resuelto`. `FOR SHARE` hace que una transición concurrente espere. Se agregaron un test unitario (el incidente se cierra mientras el LLM responde) y uno SQL.
+  - (3) Se aplicaron todas las mejoras salvo la precondición de versión, que el spec no pide y queda como decisión del usuario.
+  - Verificación: `make verify` sale con 0 y `gofmt` no marca nada; los tests Go, SQL incluidos, pasan; la e2e da 62 passed en cuatro corridas.
+- **Ajuste a las reglas de contexto:** el README documenta la configuración del chat.
+
+### 2026-10-13 — UC-10 — Copiloto conversacional (RAG y tool calling)
+- **Herramienta / agente:** Claude Code (implementación directa) y subagente `reviewer`
+- **Prompt o comando:** "Si, con las dos A": un solo cliente de chat compatible con OpenAI, y garantías de RAG deterministas en el backend
+- **Qué propuso el agente:**
+  - **Cliente de chat único:** LangChainGo v0.1.15 no soporta tool calling con su cliente nativo de Ollama, así que `internal/llm/chat.go` es un único cliente compatible con OpenAI para Groq y para Ollama (`OLLAMA_URL/v1`). El postmortem de UC-08 pasó a usarlo y se eliminó el adaptador nativo.
+  - **`runbook.Search`:** búsqueda por similitud coseno en pgvector (top 3, umbral `RAG_MIN_SIMILARITY`, 0.5 por defecto).
+  - **`internal/copilot`:**
+    - Las fuentes son los runbooks recuperados, nunca el texto del modelo.
+    - Sin runbook relevante ni herramienta usada, la respuesta es fija (`NoInformation`).
+    - Hay tres herramientas (`abrir_incidente`, `agregar_nota`, `listar_abiertos`) que llaman a los services como el usuario; no hay herramienta para cerrar ni transicionar.
+    - El bucle tiene un máximo de 4 rondas y no hay memoria de conversación en el backend.
+  - **UI:** panel de chat con fuentes y acciones.
+  - **E2E:** `fake-ollama.mjs` pasa a `/v1/chat/completions` con un modelo de reglas por palabras clave.
+- **Qué falló y qué capa lo detectó:**
+  - (1) **La e2e destapó un error de diseño:** la respuesta fija también pisaba la negativa en texto del modelo ante "cerrá el incidente" (UC-10.6). Un modelo real no llama a una herramienta inexistente: responde con texto. El test unitario no lo veía porque su modelo fake sí intentaba llamar a `cerrar_incidente`.
+  - (2) **El `reviewer` encontró un BLOQUEANTE:** si el modelo fallaba después de ejecutar una herramienta, `Ask` respondía 503 y descartaba las acciones. El usuario no veía el incidente creado y, al reintentar, lo duplicaba.
+  - (3) **El `reviewer` también marcó estas mejoras:**
+    - inyección de instrucciones mediante títulos de incidentes devueltos por `listar_abiertos`, y ningún tope de escrituras por pregunta;
+    - runbooks dentro del mensaje `system`;
+    - errores de infraestructura de las herramientas que se mostraban al modelo y al cliente;
+    - una doble llamada a `services.List`;
+    - un comentario falso en el handler.
+  - (4) **Falla de UC-08.3 en 1 de 7 corridas:** la explicó el `reviewer`. Era una carrera del test: esperaba el textarea, que se actualiza con el `fill`, en lugar de la respuesta del PUT. No era un problema del código.
+  - (5) **Falla de UC-10.2 en 1 de 3 corridas:** la pregunta compartía vocabulario con un runbook legítimo de UC-07.5 que corría en paralelo, y el copiloto lo citaba con razón. El test no estaba bien aislado. Lo detectó la e2e.
+- **Corrección / decisión:**
+  - (1) La respuesta fija aclara además que el copiloto no puede cerrar, resolver ni transicionar. Se agregó un test unitario con la negativa en texto.
+  - (2) Si ya hubo acciones y el modelo falla o se agotan las rondas, la API responde 200 con las acciones y un texto armado a partir de ellas.
+  - (3) Se aplicaron las mejoras:
+    - una sola herramienta que escribe por pregunta, y solo como primera acción;
+    - runbooks en un mensaje aparte, delimitados como datos;
+    - los errores que no son de dominio cortan la pregunta, se loguean y dan 500;
+    - una sola llamada a `services.List`;
+    - el comentario del handler, corregido.
+  - (4) El test espera la respuesta del PUT.
+  - (5) Se usó vocabulario sin solapamiento.
+  - Quedan sin aplicar: los tests BR-14 son guiones y no tablas (hay precedente en el repo), y el panel no refresca el tablero después de una acción del copiloto (el spec no lo pide).
+  - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan; la e2e da 68 passed en tres corridas seguidas.
+- **Ajuste a las reglas de contexto:** el README documenta el copiloto, `RAG_MIN_SIMILARITY` y que Ollama se usa en `OLLAMA_URL/v1`.

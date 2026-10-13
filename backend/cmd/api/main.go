@@ -17,14 +17,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"incident-room-backend/internal/auth"
+	"incident-room-backend/internal/copilot"
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/llm"
+	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/postmortem"
+	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -34,7 +41,17 @@ import (
 const (
 	sessionTTL                = 24 * time.Hour
 	defaultEscalationInterval = 10 * time.Second
-	shutdownTimeout           = 10 * time.Second
+	// Embeddings always come from Ollama; 768 dimensions match the runbooks table (UC-07).
+	defaultOllamaURL      = "http://localhost:11434"
+	defaultEmbeddingModel = "nomic-embed-text"
+	// Chat (UC-08, UC-10): Ollama by default; Groq through its OpenAI-compatible API.
+	defaultOllamaChatModel = "llama3.1"
+	defaultGroqURL         = "https://api.groq.com/openai/v1"
+	defaultGroqChatModel   = "llama-3.1-8b-instant"
+	// Copilot RAG (UC-10): runbooks used per question and their minimum similarity.
+	ragTopK              = 3
+	defaultMinSimilarity = 0.5
+	shutdownTimeout      = 10 * time.Second
 )
 
 func main() {
@@ -78,6 +95,27 @@ func run() error {
 	incidentRepo := incident.NewPostgresRepository(pool)
 	incidentSvc := incident.NewService(incidentRepo, time.Now, sla)
 	timelineSvc := timeline.NewService(incidentRepo, time.Now)
+	metricsSvc := metrics.NewService(metrics.NewPostgresRepository(pool), time.Now, sla)
+	embedder, err := llm.NewOllamaEmbedder(envOr(os.Getenv, "OLLAMA_URL", defaultOllamaURL), envOr(os.Getenv, "EMBEDDING_MODEL", defaultEmbeddingModel))
+	if err != nil {
+		return err
+	}
+	runbookSvc := runbook.NewService(runbook.NewPostgresRepository(pool), embedder, time.Now)
+	chatCfg, err := chatConfigFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	chat, err := chatCfg.build()
+	if err != nil {
+		return err
+	}
+	postmortemSvc := postmortem.NewService(incidentRepo, postmortem.NewPostgresRepository(pool), chat, time.Now)
+	minSimilarity, err := minSimilarityFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	copilotSvc := copilot.NewService(chat, runbookSvc, incidentSvc, timelineSvc, serviceMgr,
+		copilot.Config{TopK: ragTopK, MinSimilarity: minSimilarity})
 
 	if email, password := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && password != "" {
 		if err := userSvc.EnsureAdmin(ctx, email, password); err != nil {
@@ -106,7 +144,7 @@ func run() error {
 		port = "8080"
 	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, logger), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, runbookSvc, postmortemSvc, copilotSvc, logger), ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
 
@@ -145,6 +183,77 @@ func runEscalation(ctx context.Context, svc overdueEscalator, interval time.Dura
 			}
 		}
 	}
+}
+
+// chatConfig selects the chat provider (Ollama or Groq) without touching code.
+type chatConfig struct {
+	provider, baseURL, apiKey, model string
+}
+
+// chatConfigFromEnv reads LLM_PROVIDER (ollama by default, or groq) and
+// LLM_MODEL. Both are reached through the OpenAI-compatible API: Ollama under
+// OLLAMA_URL/v1 (it needs no key), Groq at LLM_BASE_URL with GROQ_API_KEY. A
+// missing key or an unknown provider stops the start.
+func chatConfigFromEnv(getenv func(string) string) (chatConfig, error) {
+	switch provider := envOr(getenv, "LLM_PROVIDER", "ollama"); provider {
+	case "ollama":
+		return chatConfig{
+			provider: provider,
+			baseURL:  strings.TrimSuffix(envOr(getenv, "OLLAMA_URL", defaultOllamaURL), "/") + "/v1",
+			// Ollama ignores the key, but the OpenAI client refuses an empty one.
+			apiKey: "ollama",
+			model:  envOr(getenv, "LLM_MODEL", defaultOllamaChatModel),
+		}, nil
+	case "groq":
+		key := getenv("GROQ_API_KEY")
+		if key == "" {
+			return chatConfig{}, errors.New("LLM_PROVIDER=groq requires GROQ_API_KEY")
+		}
+		return chatConfig{
+			provider: provider,
+			baseURL:  envOr(getenv, "LLM_BASE_URL", defaultGroqURL),
+			apiKey:   key,
+			model:    envOr(getenv, "LLM_MODEL", defaultGroqChatModel),
+		}, nil
+	default:
+		return chatConfig{}, fmt.Errorf("LLM_PROVIDER must be ollama or groq, got %q", provider)
+	}
+}
+
+// String hides the API key, so logging the configuration never leaks it.
+func (c chatConfig) String() string {
+	key := ""
+	if c.apiKey != "" {
+		key = "***"
+	}
+	return fmt.Sprintf("{provider:%s baseURL:%s apiKey:%s model:%s}", c.provider, c.baseURL, key, c.model)
+}
+
+func (c chatConfig) build() (*llm.Chat, error) {
+	return llm.NewChat(c.baseURL, c.apiKey, c.model)
+}
+
+// minSimilarityFromEnv reads RAG_MIN_SIMILARITY, the cosine similarity a
+// runbook needs to be used by the copilot. It depends on the embeddings model,
+// so it is tunable; the default suits nomic-embed-text.
+func minSimilarityFromEnv(getenv func(string) string) (float64, error) {
+	v := getenv("RAG_MIN_SIMILARITY")
+	if v == "" {
+		return defaultMinSimilarity, nil
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil || f < 0 || f > 1 {
+		return 0, fmt.Errorf("RAG_MIN_SIMILARITY must be a number between 0 and 1, got %q", v)
+	}
+	return f, nil
+}
+
+// envOr returns the variable name, or fallback when it is unset or empty.
+func envOr(getenv func(string) string, name, fallback string) string {
+	if v := getenv(name); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // slaFromEnv reads SLA_SEV1, SLA_SEV2 and SLA_SEV3 over the defaults (BR-03).

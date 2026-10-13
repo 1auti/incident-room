@@ -8,11 +8,16 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"incident-room-backend/internal/auth"
+	"incident-room-backend/internal/copilot"
 	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/postmortem"
+	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -52,7 +57,7 @@ type Incidents interface {
 	Declare(ctx context.Context, actor user.User, in incident.DeclareInput) (incident.Incident, []incident.TimelineEvent, error)
 	List(ctx context.Context, actor user.User, f incident.ListFilter) ([]incident.Incident, error)
 	Get(ctx context.Context, actor user.User, id string) (incident.Incident, error)
-	Transition(ctx context.Context, actor user.User, id string, to incident.State) (incident.Incident, error)
+	Transition(ctx context.Context, actor user.User, id string, to incident.State, rootCause string) (incident.Incident, error)
 }
 
 // Timeline is the timeline behavior the handlers need.
@@ -62,18 +67,48 @@ type Timeline interface {
 	ChangeSeverity(ctx context.Context, actor user.User, incidentID string, to incident.Severity) (incident.Incident, error)
 }
 
+// Metrics is the dashboard behavior the handlers need.
+type Metrics interface {
+	Dashboard(ctx context.Context, actor user.User, q metrics.Query) (metrics.Dashboard, error)
+}
+
+// Runbooks is the runbook behavior the handlers need.
+type Runbooks interface {
+	List(ctx context.Context, actor user.User, serviceID string) ([]runbook.Runbook, error)
+	Create(ctx context.Context, actor user.User, serviceID, title, content string) (runbook.Runbook, error)
+	Update(ctx context.Context, actor user.User, id, title, content string) (runbook.Runbook, error)
+	Delete(ctx context.Context, actor user.User, id string) error
+}
+
+// Postmortems is the postmortem behavior the handlers need.
+type Postmortems interface {
+	Get(ctx context.Context, actor user.User, incidentID string) (postmortem.Postmortem, error)
+	Generate(ctx context.Context, actor user.User, incidentID string) (postmortem.Postmortem, error)
+	Edit(ctx context.Context, actor user.User, incidentID, content string) (postmortem.Postmortem, error)
+	Approve(ctx context.Context, actor user.User, incidentID string) (postmortem.Postmortem, error)
+}
+
+// Copilot is the conversational behavior the handlers need.
+type Copilot interface {
+	Ask(ctx context.Context, actor user.User, message string) (copilot.Answer, error)
+}
+
 type handlers struct {
-	users     Users
-	auth      Auth
-	services  Services
-	incidents Incidents
-	timeline  Timeline
-	logger    *slog.Logger
+	users       Users
+	auth        Auth
+	services    Services
+	incidents   Incidents
+	timeline    Timeline
+	metrics     Metrics
+	runbooks    Runbooks
+	postmortems Postmortems
+	copilot     Copilot
+	logger      *slog.Logger
 }
 
 // New builds the API router. Only register and login are public (BR-10).
-func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, logger *slog.Logger) http.Handler {
-	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, logger: logger}
+func New(users Users, authn Auth, services Services, incidents Incidents, tl Timeline, m Metrics, rb Runbooks, pm Postmortems, cp Copilot, logger *slog.Logger) http.Handler {
+	h := &handlers{users: users, auth: authn, services: services, incidents: incidents, timeline: tl, metrics: m, runbooks: rb, postmortems: pm, copilot: cp, logger: logger}
 	requireAuth := auth.RequireAuth(authn, logger)
 	requireAdmin := auth.RequireRole(user.RoleAdmin)
 
@@ -98,6 +133,21 @@ func New(users Users, authn Auth, services Services, incidents Incidents, tl Tim
 	mux.Handle("PATCH /api/incidents/{id}/severity", requireAuth(http.HandlerFunc(h.changeSeverity)))
 	// Timeline events are append-only (BR-09): no method may touch a single event.
 	mux.Handle("/api/incidents/{id}/timeline/{eventID}", requireAuth(http.HandlerFunc(eventsAreImmutable)))
+	// Every authenticated user talks to the copilot; its tools run as that user (BR-14).
+	mux.Handle("POST /api/copilot", requireAuth(http.HandlerFunc(h.askCopilot)))
+	// Every authenticated user reads the postmortem; the service decides who
+	// generates, edits and approves it (BR-11, BR-13).
+	mux.Handle("GET /api/incidents/{id}/postmortem", requireAuth(http.HandlerFunc(h.getPostmortem)))
+	mux.Handle("PUT /api/incidents/{id}/postmortem", requireAuth(http.HandlerFunc(h.editPostmortem)))
+	mux.Handle("POST /api/incidents/{id}/postmortem/generate", requireAuth(http.HandlerFunc(h.generatePostmortem)))
+	mux.Handle("POST /api/incidents/{id}/postmortem/approve", requireAuth(http.HandlerFunc(h.approvePostmortem)))
+	// Every authenticated user reads runbooks; the service lets only the admin manage them (BR-10, BR-12).
+	mux.Handle("GET /api/services/{id}/runbooks", requireAuth(http.HandlerFunc(h.listRunbooks)))
+	mux.Handle("POST /api/services/{id}/runbooks", requireAuth(http.HandlerFunc(h.createRunbook)))
+	mux.Handle("PUT /api/runbooks/{id}", requireAuth(http.HandlerFunc(h.updateRunbook)))
+	mux.Handle("DELETE /api/runbooks/{id}", requireAuth(http.HandlerFunc(h.deleteRunbook)))
+	// Every authenticated user sees the dashboard (BR-10).
+	mux.Handle("GET /api/metrics", requireAuth(http.HandlerFunc(h.dashboard)))
 	mux.Handle("GET /api/users", requireAuth(requireAdmin(http.HandlerFunc(h.listUsers))))
 	mux.HandleFunc("POST /api/auth/register", h.register)
 	mux.HandleFunc("POST /api/auth/login", h.login)
@@ -269,7 +319,8 @@ func (h *handlers) getIncident(w http.ResponseWriter, r *http.Request) {
 
 func (h *handlers) transitionIncident(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		To incident.State `json:"to"`
+		To        incident.State `json:"to"`
+		RootCause string         `json:"root_cause"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -279,7 +330,7 @@ func (h *handlers) transitionIncident(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor, _ := auth.UserFromContext(r.Context())
-	inc, err := h.incidents.Transition(r.Context(), actor, r.PathValue("id"), in.To)
+	inc, err := h.incidents.Transition(r.Context(), actor, r.PathValue("id"), in.To, in.RootCause)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -337,6 +388,163 @@ func (h *handlers) changeSeverity(w http.ResponseWriter, r *http.Request) {
 func eventsAreImmutable(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Allow", "")
 	writeError(w, http.StatusMethodNotAllowed, "timeline events are append-only")
+}
+
+func (h *handlers) askCopilot(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Message string `json:"message"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	ans, err := h.copilot.Ask(r.Context(), actor, in.Message)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ans)
+}
+
+func (h *handlers) getPostmortem(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	pm, err := h.postmortems.Get(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pm)
+}
+
+func (h *handlers) generatePostmortem(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	pm, err := h.postmortems.Generate(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pm)
+}
+
+func (h *handlers) editPostmortem(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Content string `json:"content"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	pm, err := h.postmortems.Edit(r.Context(), actor, r.PathValue("id"), in.Content)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pm)
+}
+
+func (h *handlers) approvePostmortem(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	pm, err := h.postmortems.Approve(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pm)
+}
+
+type runbookInput struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+func (h *handlers) listRunbooks(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	list, err := h.runbooks.List(r.Context(), actor, r.PathValue("id"))
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if list == nil {
+		list = []runbook.Runbook{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *handlers) createRunbook(w http.ResponseWriter, r *http.Request) {
+	var in runbookInput
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	rb, err := h.runbooks.Create(r.Context(), actor, r.PathValue("id"), in.Title, in.Content)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, rb)
+}
+
+func (h *handlers) updateRunbook(w http.ResponseWriter, r *http.Request) {
+	var in runbookInput
+	if !decode(w, r, &in) {
+		return
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	rb, err := h.runbooks.Update(r.Context(), actor, r.PathValue("id"), in.Title, in.Content)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rb)
+}
+
+func (h *handlers) deleteRunbook(w http.ResponseWriter, r *http.Request) {
+	actor, _ := auth.UserFromContext(r.Context())
+	if err := h.runbooks.Delete(r.Context(), actor, r.PathValue("id")); err != nil {
+		h.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// dashboard reads ?period=<n>d or a free range ?from=&to= (RFC 3339); with
+// neither the service applies its default period. Which presets exist is the
+// service's decision (ErrInvalidPeriod).
+func (h *handlers) dashboard(w http.ResponseWriter, r *http.Request) {
+	params := r.URL.Query()
+	var q metrics.Query
+	if p := params.Get("period"); p != "" {
+		digits, ok := strings.CutSuffix(p, "d")
+		days, err := strconv.Atoi(digits)
+		if !ok || err != nil || days <= 0 {
+			writeError(w, http.StatusBadRequest, "period must be 7d or 30d")
+			return
+		}
+		q.LastDays = days
+	}
+	for _, f := range []struct {
+		name string
+		dst  *time.Time
+	}{{"from", &q.From}, {"to", &q.To}} {
+		name, dst := f.name, f.dst
+		v := params.Get(name)
+		if v == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, name+" must be an RFC 3339 instant")
+			return
+		}
+		*dst = t
+	}
+	actor, _ := auth.UserFromContext(r.Context())
+	d, err := h.metrics.Dashboard(r.Context(), actor, q)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }
 
 func (h *handlers) suggestSeverity(w http.ResponseWriter, r *http.Request) {
@@ -430,6 +638,49 @@ func (h *handlers) fail(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "incident not found")
 	case errors.Is(err, incident.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid state transition")
+	case errors.Is(err, copilot.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, copilot.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid message: it must not be empty")
+	case errors.Is(err, copilot.ErrModel):
+		// Checked before runbook.ErrEmbedding. The copilot only reports ErrModel when
+		// no tool ran yet; after an action it answers 200 with what was done.
+		h.logger.Error("copilot model failed", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "LLM unavailable: the copilot cannot answer right now")
+	case errors.Is(err, postmortem.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, postmortem.ErrNotFound):
+		writeError(w, http.StatusNotFound, "postmortem not found")
+	case errors.Is(err, postmortem.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid postmortem: content is required")
+	case errors.Is(err, postmortem.ErrIncidentNotResolved):
+		writeError(w, http.StatusConflict, "the postmortem can only be generated with the incident resuelto")
+	case errors.Is(err, postmortem.ErrApproved):
+		writeError(w, http.StatusConflict, "the postmortem is approved and can no longer change")
+	case errors.Is(err, postmortem.ErrConflict):
+		writeError(w, http.StatusConflict, "the postmortem changed meanwhile: reload and retry")
+	case errors.Is(err, postmortem.ErrGeneration):
+		// The cause (provider down, empty answer) is for the operator, not the client.
+		h.logger.Error("postmortem generation failed", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "LLM unavailable: the postmortem was not generated")
+	case errors.Is(err, runbook.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid runbook: title and content are required")
+	case errors.Is(err, runbook.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden")
+	case errors.Is(err, runbook.ErrNotFound):
+		writeError(w, http.StatusNotFound, "runbook not found")
+	case errors.Is(err, runbook.ErrServiceNotFound):
+		writeError(w, http.StatusNotFound, "service not found")
+	case errors.Is(err, runbook.ErrEmbedding):
+		// The cause (provider down, wrong model) is for the operator, not the client.
+		h.logger.Error("runbook embedding failed", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "embedding provider unavailable: the runbook was not saved")
+	case errors.Is(err, metrics.ErrInvalidPeriod):
+		writeError(w, http.StatusBadRequest, "invalid period: use period=7d|30d or both from and to with from before to, not both")
+	case errors.Is(err, incident.ErrRootCauseRequired):
+		writeError(w, http.StatusBadRequest, "invalid transition: resolving requires a non-empty root_cause")
+	case errors.Is(err, incident.ErrPostmortemRequired):
+		writeError(w, http.StatusConflict, "a SEV1 incident can only be closed with an approved postmortem")
 	case errors.Is(err, incident.ErrSeverityLocked):
 		writeError(w, http.StatusConflict, "severity can no longer change: the incident is resuelto or cerrado, or its severity changed meanwhile")
 	case errors.Is(err, timeline.ErrInvalid):

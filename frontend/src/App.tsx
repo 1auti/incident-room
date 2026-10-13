@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import { AuthGate } from './features/auth/AuthGate'
+import { CopilotPanel } from './features/copilot/CopilotPanel'
 import { IncidentBoard } from './features/incidents/IncidentBoard'
 import { IncidentDetail } from './features/incidents/IncidentDetail'
 import { DeclareIncidentForm } from './features/incidents/DeclareIncidentForm'
+import { MetricsDashboard } from './features/metrics/MetricsDashboard'
+import { RunbooksPanel } from './features/runbooks/RunbooksPanel'
 import { ServicesPage } from './features/services/ServicesPage'
 
 export default function App() {
@@ -19,9 +22,17 @@ export default function App() {
           <ServicesPage user={user} />
           <IncidentBoard onOpen={setSelectedIncidentId} />
           {selectedIncidentId !== null && (
-            <IncidentDetail incidentId={selectedIncidentId} onClose={() => setSelectedIncidentId(null)} />
+            // key: opening another incident starts a fresh detail, so no draft (e.g. a root cause) leaks into it.
+            <IncidentDetail
+              key={selectedIncidentId}
+              incidentId={selectedIncidentId}
+              onClose={() => setSelectedIncidentId(null)}
+            />
           )}
           <DeclareIncidentForm />
+          <MetricsDashboard />
+          <RunbooksPanel user={user} />
+          <CopilotPanel />
         </main>
       )}
     </AuthGate>

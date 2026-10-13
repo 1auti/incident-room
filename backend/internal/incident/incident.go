@@ -31,6 +31,7 @@ const (
 	EventSeverityChange EventType = "cambio_severidad"
 	EventAssignment     EventType = "asignacion"
 	EventEscalation     EventType = "escalado"
+	EventPostmortem     EventType = "postmortem"
 )
 
 // Domain errors translated to HTTP by handlers.
@@ -46,6 +47,10 @@ var (
 	// ErrSeverityLocked: the severity can no longer change because the incident
 	// is resuelto or cerrado, or it changed meanwhile (BR-02).
 	ErrSeverityLocked = errors.New("severity can no longer change")
+	// ErrRootCauseRequired: resolving (T3) needs a non-blank root cause (BR-06).
+	ErrRootCauseRequired = errors.New("root cause required")
+	// ErrPostmortemRequired: closing (T4) a SEV1 needs an approved postmortem (BR-07).
+	ErrPostmortemRequired = errors.New("approved postmortem required")
 )
 
 // SLA holds the acknowledgement deadline per severity, measured from
@@ -89,6 +94,19 @@ type Incident struct {
 	AcknowledgedAt *time.Time `json:"acknowledged_at"`
 	// EscalatedAt is set when the incident was escalated by SLA (BR-04); nil otherwise.
 	EscalatedAt *time.Time `json:"escalated_at"`
+	// RootCause and ResolvedAt are set by T3 (BR-06); ClosedAt by T4. nil before.
+	RootCause  *string    `json:"root_cause"`
+	ResolvedAt *time.Time `json:"resolved_at"`
+	ClosedAt   *time.Time `json:"closed_at"`
+}
+
+// StateUpdate holds what a transition sets besides the state; nil fields are
+// left untouched.
+type StateUpdate struct {
+	AcknowledgedAt *time.Time
+	ResolvedAt     *time.Time
+	ClosedAt       *time.Time
+	RootCause      *string
 }
 
 // ListQuery is what the repository filters on. States is always set by the
@@ -137,16 +155,19 @@ type ServiceInfo struct {
 // escalated. Escalate sets escalated_at to ev.OccurredAt and stores ev in one
 // transaction, only if the incident is still declarado, not escalated and has the
 // severity of inc; it reports whether it escalated. UpdateState moves an incident
-// from one state to another, setting acknowledged_at when ackAt is not nil, and
-// stores ev in the same transaction; it returns ErrInvalidTransition when the
+// from one state to another, setting the non-nil fields of upd, and stores ev
+// in the same transaction; it returns ErrInvalidTransition when the
 // incident is no longer in state from, and ErrNotFound when it does not exist.
-// There is deliberately no way to update or delete events (BR-09).
+// HasApprovedPostmortem reports whether the incident has a postmortem with
+// status aprobado (BR-07). There is deliberately no way to update or delete
+// events (BR-09).
 type Repository interface {
 	List(ctx context.Context, q ListQuery) ([]Incident, error)
 	Get(ctx context.Context, id string) (Incident, error)
 	ListPendingEscalation(ctx context.Context, state State) ([]Incident, error)
 	Escalate(ctx context.Context, inc Incident, ev TimelineEvent) (bool, error)
-	UpdateState(ctx context.Context, id string, from, to State, ackAt *time.Time, ev TimelineEvent) (Incident, error)
+	UpdateState(ctx context.Context, id string, from, to State, upd StateUpdate, ev TimelineEvent) (Incident, error)
+	HasApprovedPostmortem(ctx context.Context, incidentID string) (bool, error)
 	FindService(ctx context.Context, id string) (ServiceInfo, error)
 	Create(ctx context.Context, inc Incident, events []TimelineEvent) (Incident, []TimelineEvent, error)
 }

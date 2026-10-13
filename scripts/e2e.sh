@@ -13,6 +13,7 @@ export ADMIN_EMAIL="admin-${suffix}@e2e.test"
 export ADMIN_PASSWORD="$(openssl rand -hex 16)"
 export E2E_API_PORT="${E2E_API_PORT:-18080}"
 export E2E_WEB_PORT="${E2E_WEB_PORT:-15173}"
+export E2E_OLLAMA_PORT="${E2E_OLLAMA_PORT:-11435}"
 
 # El frontend se instala aquí porque su dev server lo levanta Playwright.
 (cd "$root/frontend" && npm ci)

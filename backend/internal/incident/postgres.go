@@ -16,7 +16,7 @@ const (
 	pgInvalidTextRepresen = "22P02"
 	serviceFKName         = "incidents_service_id_fkey"
 	incidentColumns       = `id, title, description, service_id, impact, suggested_severity, severity, state,
-		declared_by, assigned_to, declared_at, acknowledged_at, escalated_at`
+		declared_by, assigned_to, declared_at, acknowledged_at, escalated_at, root_cause, resolved_at, closed_at`
 )
 
 // PostgresRepository implements Repository on Postgres.
@@ -116,7 +116,7 @@ func (r *PostgresRepository) Create(ctx context.Context, inc Incident, events []
 
 	stored := make([]TimelineEvent, 0, len(events))
 	for _, e := range events {
-		out, err := insertEvent(ctx, tx, created.ID, e)
+		out, err := InsertEvent(ctx, tx, created.ID, e)
 		if err != nil {
 			return Incident{}, nil, err
 		}
@@ -182,7 +182,7 @@ func (r *PostgresRepository) Escalate(ctx context.Context, inc Incident, ev Time
 	if tag.RowsAffected() == 0 {
 		return false, nil
 	}
-	if _, err := insertEvent(ctx, tx, inc.ID, ev); err != nil {
+	if _, err := InsertEvent(ctx, tx, inc.ID, ev); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -195,15 +195,18 @@ func (r *PostgresRepository) Escalate(ctx context.Context, inc Incident, ev Time
 // storing ev. The update is conditional on the current state; when no row
 // matches, the incident either does not exist (ErrNotFound) or changed state
 // meanwhile (ErrInvalidTransition).
-func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, to State, ackAt *time.Time, ev TimelineEvent) (Incident, error) {
+func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, to State, upd StateUpdate, ev TimelineEvent) (Incident, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return Incident{}, fmt.Errorf("begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	inc, err := scanIncident(tx.QueryRow(ctx, `UPDATE incidents SET state = $1, acknowledged_at = COALESCE($2, acknowledged_at)
-		WHERE id = $3 AND state = $4 RETURNING `+incidentColumns, string(to), ackAt, id, string(from)))
+	inc, err := scanIncident(tx.QueryRow(ctx, `UPDATE incidents SET state = $1,
+			acknowledged_at = COALESCE($2, acknowledged_at), resolved_at = COALESCE($3, resolved_at),
+			closed_at = COALESCE($4, closed_at), root_cause = COALESCE($5, root_cause)
+		WHERE id = $6 AND state = $7 RETURNING `+incidentColumns,
+		string(to), upd.AcknowledgedAt, upd.ResolvedAt, upd.ClosedAt, upd.RootCause, id, string(from)))
 	if pgErrCode(err) == pgInvalidTextRepresen {
 		return Incident{}, ErrNotFound
 	}
@@ -220,13 +223,24 @@ func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, t
 	if err != nil {
 		return Incident{}, fmt.Errorf("update state: %w", err)
 	}
-	if _, err := insertEvent(ctx, tx, id, ev); err != nil {
+	if _, err := InsertEvent(ctx, tx, id, ev); err != nil {
 		return Incident{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Incident{}, fmt.Errorf("commit: %w", err)
 	}
 	return inc, nil
+}
+
+// HasApprovedPostmortem reports whether the incident has an approved postmortem.
+func (r *PostgresRepository) HasApprovedPostmortem(ctx context.Context, incidentID string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM postmortems WHERE incident_id = $1 AND status = 'aprobado')`,
+		incidentID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check postmortem: %w", err)
+	}
+	return ok, nil
 }
 
 // ListEvents returns the timeline of an incident in chronological order by
@@ -270,7 +284,7 @@ func (r *PostgresRepository) AppendEvent(ctx context.Context, incidentID string,
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	out, err := insertEvent(ctx, tx, incidentID, ev)
+	out, err := InsertEvent(ctx, tx, incidentID, ev)
 	if code := pgErrCode(err); code == pgForeignKeyViolation || code == pgInvalidTextRepresen {
 		return TimelineEvent{}, ErrNotFound
 	}
@@ -318,7 +332,7 @@ func (r *PostgresRepository) ChangeSeverity(ctx context.Context, id string, from
 	if err != nil {
 		return Incident{}, fmt.Errorf("update severity: %w", err)
 	}
-	if _, err := insertEvent(ctx, tx, id, ev); err != nil {
+	if _, err := InsertEvent(ctx, tx, id, ev); err != nil {
 		return Incident{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -327,8 +341,10 @@ func (r *PostgresRepository) ChangeSeverity(ctx context.Context, id string, from
 	return inc, nil
 }
 
-// insertEvent appends one timeline event; events are only ever inserted (BR-09).
-func insertEvent(ctx context.Context, tx pgx.Tx, incidentID string, e TimelineEvent) (TimelineEvent, error) {
+// InsertEvent appends one timeline event inside tx; events are only ever
+// inserted (BR-09). It is exported so other repositories that write an event
+// with their own change (postmortem, UC-08) share this single insert.
+func InsertEvent(ctx context.Context, tx pgx.Tx, incidentID string, e TimelineEvent) (TimelineEvent, error) {
 	data := e.Data
 	if data == nil {
 		data = map[string]string{}
@@ -357,13 +373,16 @@ func scanIncident(row pgx.Row) (Incident, error) {
 	var inc Incident
 	var impact, suggested, severity, state string
 	if err := row.Scan(&inc.ID, &inc.Title, &inc.Description, &inc.ServiceID, &impact, &suggested, &severity, &state,
-		&inc.DeclaredBy, &inc.AssignedTo, &inc.DeclaredAt, &inc.AcknowledgedAt, &inc.EscalatedAt); err != nil {
+		&inc.DeclaredBy, &inc.AssignedTo, &inc.DeclaredAt, &inc.AcknowledgedAt, &inc.EscalatedAt,
+		&inc.RootCause, &inc.ResolvedAt, &inc.ClosedAt); err != nil {
 		return Incident{}, err
 	}
 	inc.Impact, inc.SuggestedSeverity, inc.Severity, inc.State = Impact(impact), Severity(suggested), Severity(severity), State(state)
 	inc.DeclaredAt = inc.DeclaredAt.UTC()
 	inc.AcknowledgedAt = utcPtr(inc.AcknowledgedAt)
 	inc.EscalatedAt = utcPtr(inc.EscalatedAt)
+	inc.ResolvedAt = utcPtr(inc.ResolvedAt)
+	inc.ClosedAt = utcPtr(inc.ClosedAt)
 	return inc, nil
 }
 

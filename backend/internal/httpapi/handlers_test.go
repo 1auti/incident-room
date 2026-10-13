@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,8 +17,12 @@ import (
 	"time"
 
 	"incident-room-backend/internal/auth"
+	"incident-room-backend/internal/copilot"
 	"incident-room-backend/internal/httpapi"
 	"incident-room-backend/internal/incident"
+	"incident-room-backend/internal/metrics"
+	"incident-room-backend/internal/postmortem"
+	"incident-room-backend/internal/runbook"
 	"incident-room-backend/internal/service"
 	"incident-room-backend/internal/timeline"
 	"incident-room-backend/internal/user"
@@ -281,7 +286,11 @@ func (f *fakeIncidentRepo) Escalate(context.Context, incident.Incident, incident
 	return false, nil
 }
 
-func (f *fakeIncidentRepo) UpdateState(_ context.Context, id string, from, to incident.State, ackAt *time.Time, ev incident.TimelineEvent) (incident.Incident, error) {
+func (f *fakeIncidentRepo) HasApprovedPostmortem(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeIncidentRepo) UpdateState(_ context.Context, id string, from, to incident.State, upd incident.StateUpdate, ev incident.TimelineEvent) (incident.Incident, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for i := range f.incidents {
@@ -292,7 +301,15 @@ func (f *fakeIncidentRepo) UpdateState(_ context.Context, id string, from, to in
 			return incident.Incident{}, incident.ErrInvalidTransition
 		}
 		f.incidents[i].State = to
-		f.incidents[i].AcknowledgedAt = ackAt
+		if upd.AcknowledgedAt != nil {
+			f.incidents[i].AcknowledgedAt = upd.AcknowledgedAt
+		}
+		if upd.ResolvedAt != nil {
+			f.incidents[i].ResolvedAt, f.incidents[i].RootCause = upd.ResolvedAt, upd.RootCause
+		}
+		if upd.ClosedAt != nil {
+			f.incidents[i].ClosedAt = upd.ClosedAt
+		}
 		ev.IncidentID = id
 		f.events = append(f.events, ev)
 		return f.incidents[i], nil
@@ -343,6 +360,169 @@ func (f *fakeIncidentRepo) ChangeSeverity(_ context.Context, id string, from, to
 	return incident.Incident{}, incident.ErrNotFound
 }
 
+// fakeMetricsRepo has no incidents: the metric rules are tested in package metrics.
+type fakeMetricsRepo struct{ services *fakeServiceRepo }
+
+func (f *fakeMetricsRepo) ResolvedIn(context.Context, metrics.Period) ([]metrics.ResolvedRow, error) {
+	return nil, nil
+}
+
+func (f *fakeMetricsRepo) DeclaredIn(context.Context, metrics.Period) ([]metrics.DeclaredRow, error) {
+	return nil, nil
+}
+
+func (f *fakeMetricsRepo) Services(context.Context) ([]metrics.ServiceRef, error) {
+	f.services.mu.Lock()
+	defer f.services.mu.Unlock()
+	out := make([]metrics.ServiceRef, len(f.services.list))
+	for i, s := range f.services.list {
+		out[i] = metrics.ServiceRef{ID: s.ID, Name: s.Name}
+	}
+	return out, nil
+}
+
+// fakeRunbookRepo keeps runbooks in memory; the rules are tested in package runbook.
+type fakeRunbookRepo struct {
+	mu   sync.Mutex
+	rows []runbook.Runbook
+}
+
+func (f *fakeRunbookRepo) ListByService(_ context.Context, serviceID string) ([]runbook.Runbook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []runbook.Runbook
+	for _, rb := range f.rows {
+		if rb.ServiceID == serviceID {
+			out = append(out, rb)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRunbookRepo) Create(_ context.Context, rb runbook.Runbook, _ []float32) (runbook.Runbook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rb.ID = fmt.Sprintf("rb-%d", len(f.rows)+1)
+	f.rows = append(f.rows, rb)
+	return rb, nil
+}
+
+func (f *fakeRunbookRepo) Update(_ context.Context, rb runbook.Runbook, _ []float32) (runbook.Runbook, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID == rb.ID {
+			f.rows[i].Title, f.rows[i].Content, f.rows[i].UpdatedAt = rb.Title, rb.Content, rb.UpdatedAt
+			return f.rows[i], nil
+		}
+	}
+	return runbook.Runbook{}, runbook.ErrNotFound
+}
+
+func (f *fakeRunbookRepo) Search(context.Context, []float32, int, float64) ([]runbook.Match, error) {
+	return nil, nil
+}
+
+func (f *fakeRunbookRepo) Delete(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.rows {
+		if f.rows[i].ID == id {
+			f.rows = append(f.rows[:i], f.rows[i+1:]...)
+			return nil
+		}
+	}
+	return runbook.ErrNotFound
+}
+
+// fakeEmbedder returns a vector of the stored size, or err when set.
+type fakeEmbedder struct{ err error }
+
+func (f *fakeEmbedder) Embed(context.Context, string) ([]float32, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return make([]float32, runbook.Dimensions), nil
+}
+
+// fakePostmortemRepo keeps postmortems in memory with the borrador-only writes
+// of the real repository; the rules are tested in package postmortem.
+type fakePostmortemRepo struct {
+	mu   sync.Mutex
+	byID map[string]postmortem.Postmortem
+}
+
+func (f *fakePostmortemRepo) Find(_ context.Context, incidentID string) (postmortem.Postmortem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pm, ok := f.byID[incidentID]
+	if !ok {
+		return postmortem.Postmortem{}, postmortem.ErrNotFound
+	}
+	return pm, nil
+}
+
+func (f *fakePostmortemRepo) CreateDraft(_ context.Context, pm postmortem.Postmortem, _ incident.TimelineEvent) (postmortem.Postmortem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pm.ID = "pm-" + pm.IncidentID
+	f.byID[pm.IncidentID] = pm
+	return pm, nil
+}
+
+func (f *fakePostmortemRepo) change(incidentID string, apply func(*postmortem.Postmortem)) (postmortem.Postmortem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	pm, ok := f.byID[incidentID]
+	if !ok {
+		return postmortem.Postmortem{}, postmortem.ErrNotFound
+	}
+	if pm.Status != postmortem.StatusDraft {
+		return postmortem.Postmortem{}, postmortem.ErrApproved
+	}
+	apply(&pm)
+	f.byID[incidentID] = pm
+	return pm, nil
+}
+
+func (f *fakePostmortemRepo) ReplaceDraft(_ context.Context, incidentID, content string, at time.Time, _ incident.TimelineEvent) (postmortem.Postmortem, error) {
+	return f.change(incidentID, func(pm *postmortem.Postmortem) { pm.Content, pm.UpdatedAt = content, at })
+}
+
+func (f *fakePostmortemRepo) UpdateContent(_ context.Context, incidentID, content string, at time.Time) (postmortem.Postmortem, error) {
+	return f.change(incidentID, func(pm *postmortem.Postmortem) { pm.Content, pm.UpdatedAt = content, at })
+}
+
+func (f *fakePostmortemRepo) Approve(_ context.Context, incidentID, by string, at time.Time, _ incident.TimelineEvent) (postmortem.Postmortem, error) {
+	return f.change(incidentID, func(pm *postmortem.Postmortem) {
+		pm.Status, pm.ApprovedBy, pm.ApprovedAt = postmortem.StatusApproved, &by, &at
+	})
+}
+
+// fakeLLM answers a fixed analysis, or err when set.
+type fakeLLM struct{ err error }
+
+func (f *fakeLLM) Generate(context.Context, string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return "Análisis del incidente", nil
+}
+
+// fakeModel answers every turn with reply, or err when set; the conversation
+// rules are tested in package copilot.
+type fakeModel struct {
+	reply string
+	err   error
+}
+
+func (f *fakeModel) Converse(context.Context, []copilot.Message, []copilot.ToolDef) (copilot.Message, error) {
+	if f.err != nil {
+		return copilot.Message{}, f.err
+	}
+	return copilot.Message{Role: copilot.RoleAssistant, Content: f.reply}, nil
+}
+
 var fixedNow = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 type env struct {
@@ -352,6 +532,10 @@ type env struct {
 	usersSvc  *user.Service
 	services  *fakeServiceRepo
 	incidents *fakeIncidentRepo
+	runbooks  *fakeRunbookRepo
+	embedder  *fakeEmbedder
+	llm       *fakeLLM
+	model     *fakeModel
 }
 
 func newEnv(t *testing.T) *env {
@@ -364,8 +548,16 @@ func newEnv(t *testing.T) *env {
 	incidents := &fakeIncidentRepo{services: services}
 	is := incident.NewService(incidents, func() time.Time { return fixedNow }, incident.DefaultSLA())
 	ts := timeline.NewService(incidents, func() time.Time { return fixedNow })
-	h := httpapi.New(us, as, service.NewManager(services, users, func() time.Time { return fixedNow }), is, ts, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents}
+	ms := metrics.NewService(&fakeMetricsRepo{services: services}, func() time.Time { return fixedNow }, incident.DefaultSLA())
+	runbooks, embedder := &fakeRunbookRepo{}, &fakeEmbedder{}
+	rs := runbook.NewService(runbooks, embedder, func() time.Time { return fixedNow })
+	llm := &fakeLLM{}
+	ps := postmortem.NewService(incidents, &fakePostmortemRepo{byID: map[string]postmortem.Postmortem{}}, llm, func() time.Time { return fixedNow })
+	mgr := service.NewManager(services, users, func() time.Time { return fixedNow })
+	model := &fakeModel{reply: "respuesta"}
+	cs := copilot.NewService(model, rs, is, ts, mgr, copilot.Config{TopK: 3, MinSimilarity: 0.5})
+	h := httpapi.New(us, as, mgr, is, ts, ms, rs, ps, cs, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return &env{h: h, users: users, sessions: sessions, usersSvc: us, services: services, incidents: incidents, runbooks: runbooks, embedder: embedder, llm: llm, model: model}
 }
 
 func (e *env) do(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -478,6 +670,16 @@ func TestBR10_RutasProtegidasSinSesion(t *testing.T) {
 		{"GET", "/api/incidents/inc-1/timeline", ""},
 		{"POST", "/api/incidents/inc-1/notes", `{"body":"hola"}`},
 		{"PATCH", "/api/incidents/inc-1/severity", `{"severity":"SEV1"}`},
+		{"GET", "/api/metrics", ""},
+		{"GET", "/api/services/svc-1/runbooks", ""},
+		{"POST", "/api/services/svc-1/runbooks", `{"title":"t","content":"c"}`},
+		{"PUT", "/api/runbooks/rb-1", `{"title":"t","content":"c"}`},
+		{"DELETE", "/api/runbooks/rb-1", ""},
+		{"GET", "/api/incidents/inc-1/postmortem", ""},
+		{"POST", "/api/incidents/inc-1/postmortem/generate", ""},
+		{"PUT", "/api/incidents/inc-1/postmortem", `{"content":"x"}`},
+		{"POST", "/api/incidents/inc-1/postmortem/approve", ""},
+		{"POST", "/api/copilot", `{"message":"hola"}`},
 	} {
 		w := e.do(tc.method, tc.path, tc.body, nil)
 		if w.Code != http.StatusUnauthorized {
@@ -1128,5 +1330,243 @@ func TestUC05_CambioSeveridadPorAPI(t *testing.T) {
 	}
 	if e.incidents.incidents[0].Severity != incident.SeveritySEV1 || len(e.incidents.events) != events {
 		t.Errorf("rejected change had effects: %+v", e.incidents.incidents[0])
+	}
+}
+
+func TestUC06_TransicionesPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	id := e.declareOn(t, eng, e.createService(t, admin, "Pagos"))
+	path := "/api/incidents/" + id + "/transitions"
+	step := func(body string, want int) map[string]any {
+		t.Helper()
+		w := e.do("POST", path, body, admin)
+		if w.Code != want {
+			t.Fatalf("%s status = %d, want %d; body %s", body, w.Code, want, w.Body)
+		}
+		var got map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		return got
+	}
+
+	step(`{"to":"reconocido"}`, http.StatusOK)
+	step(`{"to":"mitigando"}`, http.StatusOK)
+	step(`{"to":"resuelto","root_cause":"   "}`, http.StatusBadRequest)
+	got := step(`{"to":"resuelto","root_cause":"Fuga en v2.3"}`, http.StatusOK)
+	if got["root_cause"] != "Fuga en v2.3" || got["resolved_at"] != "2026-10-01T10:00:00Z" {
+		t.Errorf("resolved = %v", got)
+	}
+
+	// A SEV1 without an approved postmortem cannot close (BR-07): the fake has none.
+	e.incidents.incidents[0].Severity = incident.SeveritySEV1
+	step(`{"to":"cerrado"}`, http.StatusConflict)
+	e.incidents.incidents[0].Severity = incident.SeveritySEV3
+	if got := step(`{"to":"cerrado"}`, http.StatusOK); got["state"] != "cerrado" {
+		t.Errorf("closed = %v", got)
+	}
+}
+
+func TestUC09_DashboardPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, _ := e.cookies(t)
+	e.createService(t, admin, "Pagos")
+
+	get := func(query string) (int, map[string]any) {
+		w := e.do("GET", "/api/metrics"+query, "", eng)
+		var got map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		return w.Code, got
+	}
+	for query, want := range map[string]string{
+		"":            "2026-09-01T10:00:00Z",
+		"?period=30d": "2026-09-01T10:00:00Z",
+		"?period=7d":  "2026-09-24T10:00:00Z",
+		"?from=2026-09-20T00:00:00Z&to=2026-09-21T00:00:00Z": "2026-09-20T00:00:00Z",
+	} {
+		code, got := get(query)
+		if code != http.StatusOK || got["from"] != want {
+			t.Errorf("%q: status = %d, from = %v; want 200, %s", query, code, got["from"], want)
+		}
+	}
+
+	// No data is null, never 0 (BR-16, BR-18); every service is listed with its count (BR-17).
+	_, got := get("")
+	if v, ok := got["mttr_seconds"]; !ok || v != nil {
+		t.Errorf("mttr_seconds = %v (present %v), want null", v, ok)
+	}
+	if v, ok := got["sla_compliance_percent"]; !ok || v != nil {
+		t.Errorf("sla_compliance_percent = %v (present %v), want null", v, ok)
+	}
+	byService, _ := got["incidents_by_service"].([]any)
+	if len(byService) != 1 || byService[0].(map[string]any)["count"] != float64(0) {
+		t.Errorf("incidents_by_service = %v, want Pagos with 0", got["incidents_by_service"])
+	}
+
+	for _, query := range []string{
+		"?period=14d", "?from=ayer&to=2026-09-21T00:00:00Z", "?from=2026-09-20T00:00:00Z",
+		"?from=2026-09-21T00:00:00Z&to=2026-09-20T00:00:00Z", "?period=7d&from=2026-09-20T00:00:00Z&to=2026-09-21T00:00:00Z",
+	} {
+		if code, _ := get(query); code != http.StatusBadRequest {
+			t.Errorf("%q status = %d, want 400", query, code)
+		}
+	}
+}
+
+func TestUC07_RunbooksPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+	svcID := e.createService(t, admin, "Pagos")
+	path := "/api/services/" + svcID + "/runbooks"
+	body := `{"title":"Pool agotado","content":"Paso 1: reiniciar el pool"}`
+
+	for name, c := range map[string]*http.Cookie{"ingeniero": eng, "oncall": oncall} {
+		if w := e.do("POST", path, body, c); w.Code != http.StatusForbidden {
+			t.Errorf("%s create status = %d, want 403", name, w.Code)
+		}
+	}
+	for name, b := range map[string]string{"json invalido": `{`, "sin titulo": `{"content":"c"}`, "sin contenido": `{"title":"t"}`} {
+		if w := e.do("POST", path, b, admin); w.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", name, w.Code)
+		}
+	}
+	e.embedder.err = errors.New("connection refused")
+	if w := e.do("POST", path, body, admin); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("embedder down status = %d, want 503", w.Code)
+	}
+	e.embedder.err = nil
+	if len(e.runbooks.rows) != 0 {
+		t.Fatalf("rejected creations stored runbooks: %+v", e.runbooks.rows)
+	}
+
+	w := e.do("POST", path, body, admin)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	if w.Code != http.StatusCreated || created["service_id"] != svcID || created["title"] != "Pool agotado" {
+		t.Fatalf("create status = %d, body %s", w.Code, w.Body)
+	}
+	if _, ok := created["embedding"]; ok {
+		t.Errorf("the embedding must not be exposed: %s", w.Body)
+	}
+	id := created["id"].(string)
+
+	w = e.do("GET", path, "", eng)
+	var list []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &list); w.Code != http.StatusOK || err != nil || len(list) != 1 {
+		t.Errorf("list status = %d, body %s", w.Code, w.Body)
+	}
+	if w := e.do("GET", "/api/services/otro/runbooks", "", eng); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Errorf("other service list = %d %s, want 200 []", w.Code, w.Body)
+	}
+
+	if w := e.do("PUT", "/api/runbooks/"+id, `{"title":"Pool agotado","content":"Paso 2"}`, eng); w.Code != http.StatusForbidden {
+		t.Errorf("ingeniero update status = %d, want 403", w.Code)
+	}
+	if w := e.do("PUT", "/api/runbooks/"+id, `{"title":"Pool agotado","content":"Paso 2"}`, admin); w.Code != http.StatusOK {
+		t.Errorf("update status = %d, body %s", w.Code, w.Body)
+	}
+	if w := e.do("PUT", "/api/runbooks/nope", body, admin); w.Code != http.StatusNotFound {
+		t.Errorf("update unknown status = %d, want 404", w.Code)
+	}
+	if w := e.do("DELETE", "/api/runbooks/"+id, "", oncall); w.Code != http.StatusForbidden {
+		t.Errorf("oncall delete status = %d, want 403", w.Code)
+	}
+	if w := e.do("DELETE", "/api/runbooks/"+id, "", admin); w.Code != http.StatusNoContent {
+		t.Errorf("delete status = %d, want 204", w.Code)
+	}
+	if w := e.do("DELETE", "/api/runbooks/"+id, "", admin); w.Code != http.StatusNotFound {
+		t.Errorf("second delete status = %d, want 404", w.Code)
+	}
+}
+
+func TestUC08_PostmortemPorAPI(t *testing.T) {
+	e := newEnv(t)
+	admin, eng, oncall := e.cookies(t)
+	svcID := e.createService(t, admin, "Pagos")
+	if w := e.do("PUT", "/api/services/"+svcID+"/oncall", `{"user_id":"`+userID("oli@x.com")+`"}`, admin); w.Code != http.StatusOK {
+		t.Fatalf("assign status = %d", w.Code)
+	}
+	id := e.declareOn(t, eng, svcID)
+	base := "/api/incidents/" + id + "/postmortem"
+	status := func(method, path, body string, c *http.Cookie) int { return e.do(method, path, body, c).Code }
+
+	if got := status("POST", base+"/generate", "", oncall); got != http.StatusConflict {
+		t.Errorf("generate on declarado = %d, want 409", got)
+	}
+	e.incidents.incidents[0].State = incident.StateResolved
+	if got := status("POST", base+"/generate", "", eng); got != http.StatusForbidden {
+		t.Errorf("ingeniero generate = %d, want 403", got)
+	}
+	e.llm.err = errors.New("connection refused")
+	if got := status("POST", base+"/generate", "", oncall); got != http.StatusServiceUnavailable {
+		t.Errorf("LLM down generate = %d, want 503", got)
+	}
+	e.llm.err = nil
+	if got := status("GET", base, "", eng); got != http.StatusNotFound {
+		t.Errorf("get before generate = %d, want 404", got)
+	}
+
+	w := e.do("POST", base+"/generate", "", oncall)
+	var pm map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &pm)
+	if w.Code != http.StatusOK || pm["status"] != "borrador" || pm["generated_by_llm"] != true ||
+		!strings.Contains(pm["content"].(string), "Análisis del incidente") {
+		t.Fatalf("generate = %d %s", w.Code, w.Body)
+	}
+	if got := status("GET", base, "", eng); got != http.StatusOK {
+		t.Errorf("ingeniero get = %d, want 200", got)
+	}
+	if got := status("PUT", base, `{"content":"  "}`, oncall); got != http.StatusBadRequest {
+		t.Errorf("blank edit = %d, want 400", got)
+	}
+	if got := status("PUT", base, `{"content":"Texto editado"}`, oncall); got != http.StatusOK {
+		t.Errorf("edit = %d, want 200", got)
+	}
+	if got := status("POST", base+"/approve", "", oncall); got != http.StatusForbidden {
+		t.Errorf("oncall approve = %d, want 403", got)
+	}
+
+	w = e.do("POST", base+"/approve", "", admin)
+	_ = json.Unmarshal(w.Body.Bytes(), &pm)
+	if w.Code != http.StatusOK || pm["status"] != "aprobado" || pm["approved_by"] != userID("root@x.com") || pm["approved_at"] != "2026-10-01T10:00:00Z" {
+		t.Fatalf("approve = %d %s", w.Code, w.Body)
+	}
+	for _, tc := range []struct{ method, path, body string }{
+		{"PUT", base, `{"content":"otro"}`},
+		{"POST", base + "/generate", ""},
+		{"POST", base + "/approve", ""},
+	} {
+		if got := status(tc.method, tc.path, tc.body, admin); got != http.StatusConflict {
+			t.Errorf("%s %s on approved = %d, want 409", tc.method, tc.path, got)
+		}
+	}
+}
+
+func TestUC10_CopilotoPorAPI(t *testing.T) {
+	e := newEnv(t)
+	_, eng, _ := e.cookies(t)
+	for name, body := range map[string]string{"json invalido": `{`, "vacio": `{"message":"  "}`} {
+		if w := e.do("POST", "/api/copilot", body, eng); w.Code != http.StatusBadRequest {
+			t.Errorf("%s status = %d, want 400", name, w.Code)
+		}
+	}
+	// No runbook is relevant here (the fake repository finds none): the fixed reply, never the model's.
+	w := e.do("POST", "/api/copilot", `{"message":"¿cómo reinicio el pool?"}`, eng)
+	var ans map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &ans)
+	if w.Code != http.StatusOK || ans["reply"] != copilot.NoInformation {
+		t.Errorf("ask = %d %s", w.Code, w.Body)
+	}
+	if sources, ok := ans["sources"].([]any); !ok || len(sources) != 0 {
+		t.Errorf("sources = %v, want []", ans["sources"])
+	}
+	e.model.err = errors.New("connection refused")
+	if w := e.do("POST", "/api/copilot", `{"message":"hola"}`, eng); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("model down status = %d, want 503", w.Code)
+	}
+	e.model.err = nil
+	e.embedder.err = errors.New("connection refused")
+	w = e.do("POST", "/api/copilot", `{"message":"hola"}`, eng)
+	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "runbook was not saved") {
+		t.Errorf("embedder down = %d %s, want the copilot's 503", w.Code, w.Body)
 	}
 }
