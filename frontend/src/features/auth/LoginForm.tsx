@@ -1,5 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { getMe, login, type User } from '../../api/auth'
+import { Alert } from '../../ui/Alert'
+import { Button } from '../../ui/Button'
+import { Field, controlClass } from '../../ui/Field'
 
 interface Props {
   onLoggedIn: (user: User) => void
@@ -30,26 +33,52 @@ export function LoginForm({ onLoggedIn, onShowRegister, notice }: Props) {
   }
 
   return (
-    <form data-testid="login-form" onSubmit={submit}>
+    <form
+      data-testid="login-form"
+      onSubmit={submit}
+      className="flex w-full max-w-sm flex-col gap-3 rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+    >
       <h1>Iniciar sesión</h1>
-      {notice && <p data-testid="register-success">{notice}</p>}
-      <label>
+      {notice && (
+        <Alert tone="status" data-testid="register-success">
+          {notice}
+        </Alert>
+      )}
+      <Field>
         Email
-        <input data-testid="login-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-      </label>
-      <label>
+        <input
+          data-testid="login-email"
+          autoComplete="email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          className={controlClass}
+        />
+      </Field>
+      <Field>
         Contraseña
         <input
           data-testid="login-password"
+          autoComplete="current-password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
+          className={controlClass}
         />
-      </label>
-      {error && <p role="alert" data-testid="login-error">{error}</p>}
-      <button data-testid="login-submit" type="submit" disabled={busy}>Entrar</button>
-      <button data-testid="show-register" type="button" onClick={onShowRegister}>Crear cuenta</button>
+      </Field>
+      {error && (
+        <Alert role="alert" data-testid="login-error">
+          {error}
+        </Alert>
+      )}
+      <Button data-testid="login-submit" type="submit" disabled={busy}>
+        Entrar
+      </Button>
+      <Button data-testid="show-register" type="button" variant="secondary" onClick={onShowRegister}>
+        Crear cuenta
+      </Button>
     </form>
   )
 }

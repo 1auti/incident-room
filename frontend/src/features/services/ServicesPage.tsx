@@ -10,12 +10,22 @@ import {
   type Service,
 } from '../../api/services'
 import { listUsers } from '../../api/users'
+import { criticalityLabel } from '../labels'
+import { Alert } from '../../ui/Alert'
+import { Button } from '../../ui/Button'
+import { Card } from '../../ui/Card'
+import { Field, controlClass } from '../../ui/Field'
+import { tableClass, tdClass, thClass } from '../../ui/table'
 
 interface Props {
   user: User
 }
 
 const criticalities: Criticality[] = ['critica', 'importante', 'estandar']
+
+// Below md each row is a stacked card whose cells carry their column name; from md it is a regular table.
+const cellClass =
+  'block before:mr-2 before:text-xs before:text-slate-400 before:content-[attr(data-label)] md:table-cell md:before:content-none'
 
 function CriticalitySelect(props: {
   testId: string
@@ -29,10 +39,11 @@ function CriticalitySelect(props: {
       aria-label={props.ariaLabel}
       value={props.value}
       onChange={(e) => props.onChange(e.target.value as Criticality)}
+      className={controlClass}
     >
       {criticalities.map((c) => (
         <option key={c} value={c}>
-          {c}
+          {criticalityLabel[c]}
         </option>
       ))}
     </select>
@@ -94,6 +105,12 @@ export function ServicesPage({ user }: Props) {
     }
   }, [isAdmin])
 
+  // Explains why "Asignar on-call" is disabled: no candidates at all, or none chosen yet.
+  function assignHint(s: Service): string | undefined {
+    if ((oncallChoice[s.id] ?? s.oncall_user_id ?? '') !== '') return undefined
+    return oncallUsers.length === 0 ? 'No hay usuarios con rol on-call para asignar' : 'Seleccioná un on-call primero'
+  }
+
   async function run(action: () => Promise<void>) {
     setError(null)
     try {
@@ -127,95 +144,151 @@ export function ServicesPage({ user }: Props) {
   }
 
   return (
-    <section>
-      <h2>Servicios</h2>
-      {error && <p role="alert" data-testid="service-error">{error}</p>}
+    <Card title="Servicios">
+      {error && (
+        <Alert role="alert" data-testid="service-error" className="mb-3">
+          {error}
+        </Alert>
+      )}
       {isAdmin && (
-        <form data-testid="service-create-form" onSubmit={submitCreate}>
-          <label>
+        <form data-testid="service-create-form" onSubmit={submitCreate} className="mb-4 flex flex-wrap items-end gap-3">
+          <Field>
             Nombre
-            <input data-testid="service-name-input" value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label>
+            <input
+              data-testid="service-name-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className={controlClass}
+            />
+          </Field>
+          <Field>
             Criticidad
             <CriticalitySelect testId="service-criticality-select" value={criticality} onChange={setCriticality} />
-          </label>
-          <button data-testid="service-create-submit" type="submit">Crear servicio</button>
+          </Field>
+          <Button data-testid="service-create-submit" type="submit">
+            Crear servicio
+          </Button>
         </form>
       )}
-      <table data-testid="services-list">
-        <thead>
-          <tr>
-            <th>Nombre</th>
-            <th>Criticidad</th>
-            <th>On-call</th>
-            {isAdmin && <th>Acciones</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {services.map((s) => (
-            <tr key={s.id} data-testid="service-row" data-service-name={s.name}>
-              <td data-testid="service-name">{s.name}</td>
-              <td data-testid="service-criticality">{s.criticality}</td>
-              <td data-testid="service-oncall">{s.oncall_user_id ?? 'Sin on-call'}</td>
-              {isAdmin && (
-                <td>
-                  {editingId === s.id ? (
-                    <form data-testid="service-edit-form" onSubmit={(e) => submitEdit(e, s.id)}>
-                      <input
-                        data-testid="service-edit-name"
-                        aria-label="Nombre del servicio"
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                      />
-                      <CriticalitySelect
-                        testId="service-edit-criticality"
-                        ariaLabel="Criticidad del servicio"
-                        value={editCriticality}
-                        onChange={setEditCriticality}
-                      />
-                      <button data-testid="service-edit-submit" type="submit">Guardar</button>
-                      <button type="button" onClick={() => setEditingId(null)}>Cancelar</button>
-                    </form>
-                  ) : (
-                    <>
-                      <select
-                        data-testid="service-oncall-select"
-                        aria-label="On-call del servicio"
-                        value={oncallChoice[s.id] ?? s.oncall_user_id ?? ''}
-                        onChange={(e) => setOncallChoice({ ...oncallChoice, [s.id]: e.target.value })}
-                      >
-                        <option value="">Seleccionar on-call</option>
-                        {oncallUsers.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        data-testid="service-oncall-submit"
-                        type="button"
-                        disabled={(oncallChoice[s.id] ?? s.oncall_user_id ?? '') === ''}
-                        onClick={() =>
-                          void run(async () => {
-                            await setServiceOncall(s.id, oncallChoice[s.id] ?? s.oncall_user_id ?? '')
-                          })
-                        }
-                      >
-                        Assign on-call
-                      </button>
-                      <button data-testid="service-edit" type="button" onClick={() => startEdit(s)}>Editar</button>
-                      <button data-testid="service-delete" type="button" onClick={() => void run(() => deleteService(s.id))}>
-                        Borrar
-                      </button>
-                    </>
-                  )}
-                </td>
-              )}
+      {isAdmin && oncallUsers.length === 0 && (
+        <p className="mb-3 text-sm text-slate-400">
+          No hay usuarios con rol on-call: asignales ese rol para poder elegir un on-call.
+        </p>
+      )}
+      <div className="overflow-x-auto">
+        <table data-testid="services-list" className={`${tableClass} block md:table`}>
+          <thead className="hidden md:table-header-group">
+            <tr>
+              <th className={thClass}>Nombre</th>
+              <th className={thClass}>Criticidad</th>
+              <th className={thClass}>On-call</th>
+              {isAdmin && <th className={thClass}>Acciones</th>}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+          </thead>
+          <tbody className="block md:table-row-group">
+            {services.map((s) => (
+              <tr
+                key={s.id}
+                data-testid="service-row"
+                data-service-name={s.name}
+                className="mb-3 block rounded-md border border-slate-800 p-2 md:mb-0 md:table-row md:rounded-none md:border-0 md:p-0"
+              >
+                <td data-testid="service-name" data-label="Nombre" className={`${tdClass} ${cellClass}`}>
+                  {s.name}
+                </td>
+                <td
+                  data-testid="service-criticality"
+                  title={criticalityLabel[s.criticality]}
+                  data-label="Criticidad"
+                  className={`${tdClass} ${cellClass}`}
+                >
+                  {s.criticality}
+                </td>
+                <td data-testid="service-oncall" data-label="On-call" className={`${tdClass} ${cellClass}`}>
+                  {s.oncall_user_id ?? 'Sin on-call'}
+                </td>
+                {isAdmin && (
+                  <td data-label="Acciones" className={`${tdClass} ${cellClass}`}>
+                    {editingId === s.id ? (
+                      <form
+                        data-testid="service-edit-form"
+                        onSubmit={(e) => submitEdit(e, s.id)}
+                        className="flex flex-wrap items-center gap-2"
+                      >
+                        <input
+                          data-testid="service-edit-name"
+                          aria-label="Nombre del servicio"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          className={controlClass}
+                        />
+                        <CriticalitySelect
+                          testId="service-edit-criticality"
+                          ariaLabel="Criticidad del servicio"
+                          value={editCriticality}
+                          onChange={setEditCriticality}
+                        />
+                        <Button data-testid="service-edit-submit" type="submit">
+                          Guardar
+                        </Button>
+                        <Button type="button" variant="secondary" onClick={() => setEditingId(null)}>
+                          Cancelar
+                        </Button>
+                      </form>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          data-testid="service-oncall-select"
+                          aria-label="On-call del servicio"
+                          value={oncallChoice[s.id] ?? s.oncall_user_id ?? ''}
+                          onChange={(e) => setOncallChoice({ ...oncallChoice, [s.id]: e.target.value })}
+                          className={controlClass}
+                        >
+                          <option value="">Seleccionar on-call</option>
+                          {oncallUsers.map((u) => (
+                            <option key={u.id} value={u.id}>
+                              {u.name}
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          data-testid="service-oncall-submit"
+                          type="button"
+                          disabled={(oncallChoice[s.id] ?? s.oncall_user_id ?? '') === ''}
+                          title={assignHint(s)}
+                          onClick={() =>
+                            void run(async () => {
+                              await setServiceOncall(s.id, oncallChoice[s.id] ?? s.oncall_user_id ?? '')
+                            })
+                          }
+                        >
+                          Asignar on-call
+                        </Button>
+                        <Button
+                          data-testid="service-edit"
+                          type="button"
+                          variant="secondary"
+                          onClick={() => startEdit(s)}
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          data-testid="service-delete"
+                          type="button"
+                          variant="dangerGhost"
+                          onClick={() => void run(() => deleteService(s.id))}
+                        >
+                          Borrar
+                        </Button>
+                      </div>
+                    )}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   )
 }

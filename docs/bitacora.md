@@ -286,3 +286,33 @@ Una entrada por iteración relevante. Es la materia prima del README.
   - Quedan sin aplicar: los tests BR-14 son guiones y no tablas (hay precedente en el repo), y el panel no refresca el tablero después de una acción del copiloto (el spec no lo pide).
   - Verificación: `make verify` sale con 0; los tests Go, SQL incluidos, pasan; la e2e da 68 passed en tres corridas seguidas.
 - **Ajuste a las reglas de contexto:** el README documenta el copiloto, `RAG_MIN_SIMILARITY` y que Ollama se usa en `OLLAMA_URL/v1`.
+
+---
+
+### 2026-10-13 — UI — Tailwind y componentes compartidos
+- **Herramienta / agente:** Claude Code (orquestador), `builder` x3 y `reviewer`
+- **Prompt o comando:** "Armemos el plan de implementacion para mejorar la UI de la aplicacion. Deberias de utilziar tailwind"
+- **Qué propuso el agente:** agregar `tailwindcss` y `@tailwindcss/vite` (devDependencies; el CSS plano no da un sistema de diseño consistente en 13 componentes), componentes presentacionales en `frontend/src/ui/` (Button, Field, Alert, Badge, Card, table) y reestilizar todas las pantallas sin tocar comportamiento, textos ni `data-testid`. Tareas T1-T8 en `odd/tasks/ui-tailwind.md`.
+- **Qué falló y qué capa lo detectó:** nada falló. El `reviewer` no halló bloqueantes; `make verify` y `make e2e` (68 passed) en verde tras cada grupo de tareas.
+- **Corrección / decisión:** sin tabs ni `hidden` responsive, porque los e2e usan `toBeVisible` sobre las secciones. El badge "Escalado" pasó de `<strong>` a `<span>` (no hay e2e que dependa del tag). Revisión nativa omitida por el usuario en los tres candidatos. Mejoras del reviewer sin aplicar: `postmortemTone` en `tones.ts`, estilos `focus-visible` y confirmar visualmente el `Field` dentro de `<p>` en `IncidentDetail`.
+- **Ajuste a las reglas de contexto:** ninguno.
+
+---
+
+### 2026-10-13 — UI — Rediseño: tema oscuro, shell, dashboard de KPIs
+- **Herramienta / agente:** Claude Code (orquestador), `builder` x6, `reviewer` y tres pasadas de QA visual con Playwright MCP
+- **Prompt o comando:** "la eleccion de colors no me gusta [...] una interfaz oscura con blanco y azul. [...] servicios [...] un componente totalmente apartado, donde la consolidada deberia de ser un dashboard de kpi de los incidentes. Declarar incidente deberia de ser un boton rapido [...] Metricas [...] de facil acceso. Runbook [...] un sidebar"
+- **Qué propuso el agente:** shell con sidebar y topbar, vistas por hash (dashboard, incidentes, servicios, métricas) sin router, dashboard de KPIs calculado con los endpoints existentes (sin backend nuevo), modal para declarar y drawers derechos para Runbooks y Copiloto, tema oscuro azul y blanco. Los e2e ganaron `e2e/helpers.ts` y navegación por vista, sin tocar aserciones. Seguimiento en `odd/tasks/ui-redesign.md`.
+- **Qué falló y qué capa lo detectó:**
+  - La primera pasada con Tailwind solo repintó la misma estructura apilada; lo detectó el usuario al verla.
+  - Ningún agente había mirado el diseño renderizado: la QA visual halló el detalle de incidente fuera de pantalla, desborde horizontal en móvil (578px sobre 390px), tiles "Sin datos" con el tamaño de un número, doble marco en modal y drawers, y valores crudos (`caida_total`).
+  - El `reviewer` marcó como bloqueante de proceso la lista "Requieren atención": una regla de priorización que inventó el orquestador y no estaba en `docs/domain.md`. También halló falta de restauración de foco, focus trap y bloqueo de scroll en los diálogos, pérdida de la conversación del copiloto al cerrar el drawer y que un fallo de `getDashboard` ocultaba los conteos.
+  - Un fallo propio: la QA dejó `.playwright-mcp/` sin versionar en el repo y eso invalidó los comandos de consentimiento de la revisión nativa (`invalid_request`).
+- **Corrección / decisión:**
+  - El usuario eligió documentar la regla como criterio de presentación (UI-01 en `docs/domain.md`, sin efecto en el backend).
+  - Se corrigió todo lo anterior en tres rondas de pulido, con `kpis.test.ts` actualizado porque se quitó la clave `cerrado` de los conteos por estado (la clave dejó de existir; no se debilitó el test).
+  - Se agregó `e2e/ui-shell.spec.ts` (Esc y foco, hash, copiloto).
+  - Quedaron textos con el valor crudo donde un e2e los afirma (`incident-state`, `service-criticality`, `timeline-event-type`) y el término "Postmortem" por ser del dominio.
+  - Verificación propia: `make verify` en 0 y `make e2e` con 74 passed. La revisión nativa fue omitida por el usuario en cada candidato.
+  - Pendiente: la decisión de push y PR, que son del usuario.
+- **Ajuste a las reglas de contexto:** ninguno.

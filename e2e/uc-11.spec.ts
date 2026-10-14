@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { goTo, loginAsAdminUi as login, loginUi } from './helpers'
 
 const adminEmail = process.env.ADMIN_EMAIL ?? ''
 const adminPassword = process.env.ADMIN_PASSWORD ?? ''
@@ -26,10 +27,8 @@ async function loginViaApi(ctx: APIRequestContext, email: string, password: stri
 }
 
 async function loginAsAdminUi(page: Page): Promise<void> {
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(adminEmail)
-  await page.getByTestId('login-password').fill(adminPassword)
-  await page.getByTestId('login-submit').click()
+  await login(page)
+  await goTo(page, 'services')
   await expect(page.getByTestId('services-list')).toBeVisible()
 }
 
@@ -294,10 +293,8 @@ test('UC-11.7 every authenticated role sees the service list; no session gets 40
   const reg = await anon.post('/api/auth/register', { data: { name: 'E2E User', email, password: 'password-e2e' } })
   expect(reg.status()).toBe(201)
   const page = await browser.newPage({ baseURL })
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(email)
-  await page.getByTestId('login-password').fill('password-e2e')
-  await page.getByTestId('login-submit').click()
+  await loginUi(page, email, 'password-e2e')
+  await goTo(page, 'services')
   await expect(page.getByTestId('services-list')).toBeVisible()
   await expect(row(page, name)).toBeVisible()
   await expect(row(page, name).getByTestId('service-criticality')).toHaveText('importante')

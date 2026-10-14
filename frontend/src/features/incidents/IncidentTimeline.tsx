@@ -1,5 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { addNote, getTimeline, type TimelineEntry } from '../../api/incidents'
+import { Alert } from '../../ui/Alert'
+import { Button } from '../../ui/Button'
+import { Field, controlClass } from '../../ui/Field'
 
 interface Props {
   incidentId: string
@@ -61,39 +64,53 @@ export function IncidentTimeline({ incidentId, reloadToken }: Props) {
   const events = current?.events ?? []
 
   return (
-    <section data-testid="timeline">
-      <h3>Timeline</h3>
+    <section data-testid="timeline" className="mt-4">
+      <h3>Línea de tiempo</h3>
       {current === null && <p role="status">Cargando...</p>}
       {current?.error && (
-        <p role="alert" data-testid="timeline-error">
+        <Alert role="alert" data-testid="timeline-error">
           {current.error}
-        </p>
+        </Alert>
       )}
-      <ol data-testid="timeline-events">
+      <ol
+        data-testid="timeline-events"
+        className="my-3 flex flex-col gap-3 border-l-2 border-slate-200 pl-4 dark:border-slate-700"
+      >
         {events.map((ev) => (
-          <li key={ev.id} data-testid="timeline-event">
-            <time data-testid="timeline-event-time" dateTime={ev.occurred_at}>
+          <li key={ev.id} data-testid="timeline-event" className="flex flex-wrap items-baseline gap-x-2 text-sm">
+            <time
+              data-testid="timeline-event-time"
+              dateTime={ev.occurred_at}
+              className="text-xs text-slate-500 dark:text-slate-400"
+            >
               {new Date(ev.occurred_at).toLocaleString()}
-            </time>{' '}
-            <strong data-testid="timeline-event-type">{ev.type}</strong>{' '}
-            <span data-testid="timeline-event-author">{ev.author_id === null ? 'Sistema' : ev.author_name}</span>{' '}
+            </time>
+            <strong data-testid="timeline-event-type">{ev.type}</strong>
+            <span data-testid="timeline-event-author" className="text-slate-600 dark:text-slate-300">
+              {ev.author_id === null ? 'Sistema' : ev.author_name}
+            </span>
             <span data-testid="timeline-event-content">{contentOf(ev)}</span>
           </li>
         ))}
       </ol>
-      <form onSubmit={(e) => void submitNote(e)}>
-        <label>
+      <form onSubmit={(e) => void submitNote(e)} className="flex flex-col gap-2">
+        <Field>
           Nota
-          <textarea data-testid="timeline-note-input" value={note} onChange={(e) => setNote(e.target.value)} />
-        </label>
-        <button type="submit" data-testid="timeline-note-submit">
+          <textarea
+            data-testid="timeline-note-input"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            className={controlClass}
+          />
+        </Field>
+        <Button type="submit" data-testid="timeline-note-submit" className="self-start">
           Agregar nota
-        </button>
+        </Button>
       </form>
       {noteError && (
-        <p role="alert" data-testid="timeline-note-error">
+        <Alert role="alert" data-testid="timeline-note-error" className="mt-2">
           {noteError}
-        </p>
+        </Alert>
       )}
     </section>
   )

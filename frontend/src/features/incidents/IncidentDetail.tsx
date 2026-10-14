@@ -7,8 +7,15 @@ import {
   type Severity,
   type State,
 } from '../../api/incidents'
+import { Alert } from '../../ui/Alert'
+import { Badge } from '../../ui/Badge'
+import { Button } from '../../ui/Button'
+import { Card } from '../../ui/Card'
+import { Field, controlClass } from '../../ui/Field'
 import { IncidentTimeline } from './IncidentTimeline'
 import { PostmortemSection } from './PostmortemSection'
+import { stateLabel } from '../labels'
+import { severityTone, stateTone } from './tones'
 
 interface Props {
   incidentId: string
@@ -74,98 +81,144 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
     }
   }
 
+  // Below lg the detail is a full-screen sheet over the list (close button inside); from lg it sits beside the board.
   return (
-    <section data-testid="incident-detail">
-      <h2>Detalle del incidente</h2>
-      <button type="button" data-testid="incident-detail-close" onClick={onClose}>
-        Cerrar detalle
-      </button>
-      {current === null && <p role="status">Cargando...</p>}
-      {current?.error && (
-        <p role="alert" data-testid="incident-detail-error">
-          {current.error}
-        </p>
-      )}
-      {actionError && (
-        <p role="alert" data-testid="incident-detail-error">
-          {actionError}
-        </p>
-      )}
-      {incident && (
-        <div>
-          <h3 data-testid="incident-detail-title">{incident.title}</h3>
-          <p>
-            Estado: <span data-testid="incident-detail-state">{incident.state}</span>
-          </p>
-          <p>
-            Severidad: <span data-testid="incident-detail-severity">{incident.severity}</span>{' '}
-            <label>
-              Cambiar severidad
+    <div className="fixed inset-0 z-20 min-w-0 overflow-y-auto bg-slate-950 p-3 lg:inset-auto lg:z-auto lg:bg-transparent lg:p-0 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
+      <Card data-testid="incident-detail">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2>Detalle del incidente</h2>
+          <Button type="button" variant="secondary" data-testid="incident-detail-close" onClick={onClose}>
+            Cerrar detalle
+          </Button>
+        </div>
+        {current === null && <p role="status">Cargando...</p>}
+        {current?.error && (
+          <Alert role="alert" data-testid="incident-detail-error" className="mt-3">
+            {current.error}
+          </Alert>
+        )}
+        {actionError && (
+          <Alert role="alert" data-testid="incident-detail-error" className="mt-3">
+            {actionError}
+          </Alert>
+        )}
+        {incident && (
+          <div className="mt-3 flex flex-col gap-3 text-sm">
+            <h3 data-testid="incident-detail-title" className="text-base [overflow-wrap:anywhere]">
+              {incident.title}
+            </h3>
+            <p className="flex items-center gap-2">
+              <span className="w-24 shrink-0 text-slate-400">Estado:</span>
+              <Badge
+                tone={stateTone[incident.state]}
+                title={stateLabel[incident.state]}
+                data-testid="incident-detail-state"
+              >
+                {incident.state}
+              </Badge>
+            </p>
+            <p className="flex items-center gap-2">
+              <span className="w-24 shrink-0 text-slate-400">Severidad:</span>
+              <Badge tone={severityTone[incident.severity]} data-testid="incident-detail-severity">
+                {incident.severity}
+              </Badge>
+            </p>
+            <Field className="flex-row items-center gap-2 rounded-md border border-slate-800 bg-slate-950/40 px-3 py-2">
+              <span className="font-normal text-slate-400">Cambiar severidad</span>
               <select
                 data-testid="incident-detail-severity-select"
                 value={incident.severity}
                 onChange={(e) => void updateSeverity(e.target.value as Severity)}
+                className={`${controlClass} ml-auto`}
               >
                 <option value="SEV1">SEV1</option>
                 <option value="SEV2">SEV2</option>
                 <option value="SEV3">SEV3</option>
               </select>
-            </label>
-          </p>
-          <p>
-            Asignado a: <span data-testid="incident-detail-assigned-to">{incident.assigned_to ?? 'Sin asignar'}</span>
-          </p>
-          {incident.escalated_at !== null && <strong data-testid="incident-detail-escalated">Escalado</strong>}
-          {incident.root_cause !== null && (
-            <p>
-              Causa raíz: <span data-testid="incident-detail-root-cause">{incident.root_cause}</span>
+            </Field>
+            <p className="flex items-center gap-2">
+              <span className="w-24 shrink-0 text-slate-400">Asignado a:</span>
+              <span data-testid="incident-detail-assigned-to">{incident.assigned_to ?? 'Sin asignar'}</span>
             </p>
-          )}
-          {incident.resolved_at !== null && (
-            <p>
-              Resuelto: <time data-testid="incident-detail-resolved-at">{incident.resolved_at}</time>
-            </p>
-          )}
-          {incident.closed_at !== null && (
-            <p>
-              Cerrado: <time data-testid="incident-detail-closed-at">{incident.closed_at}</time>
-            </p>
-          )}
-          {/* One action per state: the flow is linear (T1-T4). */}
-          {incident.state === 'declarado' && (
-            <button type="button" data-testid="incident-acknowledge" onClick={() => void transition('reconocido')}>
-              Acknowledge
-            </button>
-          )}
-          {incident.state === 'reconocido' && (
-            <button type="button" data-testid="incident-mitigate" onClick={() => void transition('mitigando')}>
-              Mitigar
-            </button>
-          )}
-          {incident.state === 'mitigando' && (
-            <div>
-              <label>
-                Causa raíz
-                <textarea
-                  data-testid="incident-root-cause-input"
-                  value={rootCause}
-                  onChange={(e) => setRootCause(e.target.value)}
-                />
-              </label>
-              <button type="button" data-testid="incident-resolve" onClick={() => void transition('resuelto')}>
-                Resolver
-              </button>
-            </div>
-          )}
-          {incident.state === 'resuelto' && (
-            <button type="button" data-testid="incident-close" onClick={() => void transition('cerrado')}>
-              Cerrar incidente
-            </button>
-          )}
-          <PostmortemSection incidentId={incidentId} onEvent={() => setTimelineReloads((n) => n + 1)} />
-          <IncidentTimeline incidentId={incidentId} reloadToken={timelineReloads} />
-        </div>
-      )}
-    </section>
+            {incident.escalated_at !== null && (
+              <div>
+                <Badge tone="danger" data-testid="incident-detail-escalated">
+                  Escalado
+                </Badge>
+              </div>
+            )}
+            {incident.root_cause !== null && (
+              <p>
+                Causa raíz: <span data-testid="incident-detail-root-cause">{incident.root_cause}</span>
+              </p>
+            )}
+            {incident.resolved_at !== null && (
+              <p>
+                Resuelto: <time data-testid="incident-detail-resolved-at">{incident.resolved_at}</time>
+              </p>
+            )}
+            {incident.closed_at !== null && (
+              <p>
+                Cerrado: <time data-testid="incident-detail-closed-at">{incident.closed_at}</time>
+              </p>
+            )}
+            {/* One action per state: the flow is linear (T1-T4). */}
+            {incident.state === 'declarado' && (
+              <Button
+                type="button"
+                className="self-start"
+                data-testid="incident-acknowledge"
+                onClick={() => void transition('reconocido')}
+              >
+                Reconocer
+              </Button>
+            )}
+            {incident.state === 'reconocido' && (
+              <Button
+                type="button"
+                className="self-start"
+                data-testid="incident-mitigate"
+                onClick={() => void transition('mitigando')}
+              >
+                Mitigar
+              </Button>
+            )}
+            {incident.state === 'mitigando' && (
+              <div className="flex flex-col gap-2">
+                <Field>
+                  Causa raíz
+                  <textarea
+                    data-testid="incident-root-cause-input"
+                    value={rootCause}
+                    onChange={(e) => setRootCause(e.target.value)}
+                    className={controlClass}
+                  />
+                </Field>
+                <Button
+                  type="button"
+                  className="self-start"
+                  data-testid="incident-resolve"
+                  onClick={() => void transition('resuelto')}
+                >
+                  Resolver
+                </Button>
+              </div>
+            )}
+            {incident.state === 'resuelto' && (
+              <Button
+                type="button"
+                className="self-start"
+                data-testid="incident-close"
+                onClick={() => void transition('cerrado')}
+              >
+                Cerrar incidente
+              </Button>
+            )}
+            <PostmortemSection incidentId={incidentId} onEvent={() => setTimelineReloads((n) => n + 1)} />
+            <IncidentTimeline incidentId={incidentId} reloadToken={timelineReloads} />
+          </div>
+        )}
+      </Card>
+    </div>
   )
 }

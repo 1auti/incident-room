@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { getMe, type User } from '../../api/auth'
+import { Alert } from '../../ui/Alert'
 import { LoginForm } from './LoginForm'
 import { RegisterForm } from './RegisterForm'
 
@@ -23,23 +24,34 @@ export function AuthGate({ children }: Props) {
       .finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <p>Cargando...</p>
-  if (loadError) return <p role="alert">{loadError}</p>
+  if (loading) return <p className="p-4 text-sm">Cargando...</p>
+  if (loadError)
+    return (
+      <Alert role="alert" className="m-4">
+        {loadError}
+      </Alert>
+    )
   if (user) return <>{children(user)}</>
 
   if (screen === 'register') {
     return (
-      <RegisterForm
-        onShowLogin={() => {
-          setNotice(undefined)
-          setScreen('login')
-        }}
-        onRegistered={() => {
-          setNotice('Cuenta creada. Ya puedes iniciar sesión.')
-          setScreen('login')
-        }}
-      />
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <RegisterForm
+          onShowLogin={() => {
+            setNotice(undefined)
+            setScreen('login')
+          }}
+          onRegistered={() => {
+            setNotice('Cuenta creada. Ya puedes iniciar sesión.')
+            setScreen('login')
+          }}
+        />
+      </div>
     )
   }
-  return <LoginForm notice={notice} onLoggedIn={setUser} onShowRegister={() => setScreen('register')} />
+  return (
+    <div className="flex min-h-screen items-center justify-center p-4">
+      <LoginForm notice={notice} onLoggedIn={setUser} onShowRegister={() => setScreen('register')} />
+    </div>
+  )
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { goTo, loginUi as uiLogin } from './helpers'
 import pg from 'pg'
 
 // The LLM is fake-ollama.mjs (POST /api/chat answers a fixed analysis). Incidents reach resuelto by
@@ -116,10 +117,8 @@ async function seedState(id: string, state: string): Promise<void> {
 }
 
 async function loginUi(page: Page, email: string, pass: string): Promise<void> {
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(email)
-  await page.getByTestId('login-password').fill(pass)
-  await page.getByTestId('login-submit').click()
+  await uiLogin(page, email, pass)
+  await goTo(page, 'incidents')
   await expect(page.getByTestId('incident-board')).toBeVisible()
 }
 

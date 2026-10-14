@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { goTo, loginUi as uiLogin } from './helpers'
 import pg from 'pg'
 
 // The backend escalates overdue incidents with a ticker (ESCALATION_INTERVAL, 1s in this suite)
@@ -154,10 +155,8 @@ async function waitEscalated(ctx: APIRequestContext, id: string): Promise<void> 
 }
 
 async function loginUi(page: Page, email: string, pass: string): Promise<void> {
-  await page.goto('/')
-  await page.getByTestId('login-email').fill(email)
-  await page.getByTestId('login-password').fill(pass)
-  await page.getByTestId('login-submit').click()
+  await uiLogin(page, email, pass)
+  await goTo(page, 'incidents')
   await expect(page.getByTestId('incident-board')).toBeVisible()
 }
 
@@ -178,6 +177,7 @@ test('UC-04.1 only the admin assigns an on-call, who must have role oncall (BR-1
 
   // The admin assigns from the UI.
   await loginUi(page, adminEmail, adminPassword)
+  await goTo(page, 'services')
   const svcRow = page.locator(`[data-testid="service-row"][data-service-name="${svc.name}"]`)
   await expect(svcRow.getByTestId('service-oncall-select').locator(`option[value="${oncall.user.id}"]`)).toBeAttached()
   await svcRow.getByTestId('service-oncall-select').selectOption(oncall.user.id)

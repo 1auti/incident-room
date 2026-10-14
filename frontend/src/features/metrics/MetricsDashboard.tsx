@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getDashboard, type Dashboard, type MetricsPeriod } from '../../api/metrics'
+import { Alert } from '../../ui/Alert'
+import { Card } from '../../ui/Card'
+import { Field, controlClass } from '../../ui/Field'
+import { tableClass, tdClass, thClass } from '../../ui/table'
 
 type Mode = '30d' | '7d' | 'range'
 
@@ -21,6 +25,36 @@ function formatMinutes(seconds: number): string {
 
 function formatPercent(pct: number): string {
   return `${Number(pct.toFixed(1))} %`
+}
+
+const dayFormat = new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+
+function formatDay(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : dayFormat.format(date)
+}
+
+// The backend range is half-open: the shown end day is the last one included.
+function formatLastDay(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return dayFormat.format(new Date(date.getTime() - 1))
+}
+
+function Tile({ label, testId, value }: { label: string; testId: string; value: string | null }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4">
+      <p className="text-xs font-medium tracking-wide text-slate-400 uppercase">{label}</p>
+      <p
+        data-testid={testId}
+        className={`mt-2 flex h-10 items-center tabular-nums ${
+          value === null ? 'text-base font-medium text-slate-400' : 'text-3xl font-semibold text-slate-100'
+        }`}
+      >
+        {value ?? 'Sin datos'}
+      </p>
+    </div>
+  )
 }
 
 interface Loaded {
@@ -61,82 +95,96 @@ export function MetricsDashboard() {
   const dashboard = current?.dashboard ?? null
 
   return (
-    <section data-testid="metrics-dashboard">
-      <h2>Métricas</h2>
-      <label>
-        Período
-        <select data-testid="metrics-period-select" value={mode} onChange={(e) => setMode(e.target.value as Mode)}>
-          <option value="30d">Últimos 30 días</option>
-          <option value="7d">Últimos 7 días</option>
-          <option value="range">Rango libre</option>
-        </select>
-      </label>
-      {mode === 'range' && (
-        <span>
-          <label>
-            Desde
-            <input
-              type="date"
-              data-testid="metrics-range-from"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-            />
-          </label>
-          <label>
-            Hasta (incluido)
-            <input
-              type="date"
-              data-testid="metrics-range-to"
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-            />
-          </label>
-        </span>
-      )}
+    <Card data-testid="metrics-dashboard" title="Métricas">
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <Field>
+          Período
+          <select
+            data-testid="metrics-period-select"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as Mode)}
+            className={controlClass}
+          >
+            <option value="30d">Últimos 30 días</option>
+            <option value="7d">Últimos 7 días</option>
+            <option value="range">Rango libre</option>
+          </select>
+        </Field>
+        {mode === 'range' && (
+          <span className="flex flex-wrap items-end gap-3">
+            <Field>
+              Desde
+              <input
+                type="date"
+                data-testid="metrics-range-from"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className={controlClass}
+              />
+            </Field>
+            <Field>
+              Hasta (incluido)
+              <input
+                type="date"
+                data-testid="metrics-range-to"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className={controlClass}
+              />
+            </Field>
+          </span>
+        )}
+      </div>
       {period !== null && current === null && <p role="status">Cargando...</p>}
       {current?.error && (
-        <p role="alert" data-testid="metrics-error">
+        <Alert role="alert" data-testid="metrics-error">
           {current.error}
-        </p>
+        </Alert>
       )}
       {dashboard && (
-        <div>
-          <p>
-            Período (UTC): <time data-testid="metrics-period-from">{dashboard.from}</time> a{' '}
-            <time data-testid="metrics-period-to">{dashboard.to}</time>
-          </p>
-          <p>
-            MTTR:{' '}
-            <span data-testid="metrics-mttr">
-              {dashboard.mttr_seconds === null ? 'Sin datos' : formatMinutes(dashboard.mttr_seconds)}
-            </span>
-          </p>
-          <p>
-            Cumplimiento de SLA:{' '}
-            <span data-testid="metrics-sla">
-              {dashboard.sla_compliance_percent === null
-                ? 'Sin datos'
-                : formatPercent(dashboard.sla_compliance_percent)}
-            </span>
-          </p>
-          <table>
+        <div className="flex flex-col gap-3">
+          <div className="text-sm text-slate-300">
+            <p>
+              Período: <span className="font-medium text-slate-100">{formatDay(dashboard.from)}</span> al{' '}
+              <span className="font-medium text-slate-100">{formatLastDay(dashboard.to)}</span>
+            </p>
+            <p className="text-xs text-slate-500">
+              UTC: <time data-testid="metrics-period-from">{dashboard.from}</time> a{' '}
+              <time data-testid="metrics-period-to">{dashboard.to}</time>
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Tile
+              label="MTTR"
+              testId="metrics-mttr"
+              value={dashboard.mttr_seconds === null ? null : formatMinutes(dashboard.mttr_seconds)}
+            />
+            <Tile
+              label="Cumplimiento de SLA"
+              testId="metrics-sla"
+              value={dashboard.sla_compliance_percent === null ? null : formatPercent(dashboard.sla_compliance_percent)}
+            />
+          </div>
+          <table className={tableClass}>
             <thead>
               <tr>
-                <th>Servicio</th>
-                <th>Incidentes</th>
+                <th className={thClass}>Servicio</th>
+                <th className={thClass}>Incidentes</th>
               </tr>
             </thead>
             <tbody>
               {dashboard.incidents_by_service.map((s) => (
                 <tr key={s.service_id} data-testid="metrics-service-row" data-service-name={s.name}>
-                  <td>{s.name}</td>
-                  <td data-testid="metrics-service-count">{s.count}</td>
+                  <td className={tdClass}>{s.name}</td>
+                  <td data-testid="metrics-service-count" className={tdClass}>
+                    {s.count}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
-    </section>
+    </Card>
   )
 }

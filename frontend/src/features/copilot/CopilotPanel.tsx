@@ -1,5 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { askCopilot, type CopilotAnswer } from '../../api/copilot'
+import { Alert } from '../../ui/Alert'
+import { Button } from '../../ui/Button'
+import { Field, controlClass } from '../../ui/Field'
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : 'Error inesperado'
@@ -32,19 +35,33 @@ export function CopilotPanel() {
   }
 
   return (
-    <section data-testid="copilot-panel">
-      <h2>Copiloto</h2>
-      <ol>
+    <div data-testid="copilot-panel" className="flex min-h-full flex-col">
+      {turns.length === 0 && (
+        <p className="mb-3 rounded-md border border-dashed border-slate-700 p-3 text-sm text-slate-400">
+          Preguntale al copiloto por un incidente, un runbook o una acción.
+        </p>
+      )}
+      <ol className="mb-3 flex flex-1 flex-col gap-2">
         {turns.map((turn, i) =>
           turn.role === 'user' ? (
-            <li key={i} data-testid="copilot-message" data-role="user">
+            <li
+              key={i}
+              data-testid="copilot-message"
+              data-role="user"
+              className="max-w-[85%] self-end rounded-lg bg-blue-950 px-3 py-2 text-sm text-slate-100"
+            >
               <strong>Vos:</strong> {turn.text}
             </li>
           ) : (
-            <li key={i} data-testid="copilot-message" data-role="copilot">
+            <li
+              key={i}
+              data-testid="copilot-message"
+              data-role="copilot"
+              className="max-w-[85%] self-start rounded-lg bg-slate-800 px-3 py-2 text-sm text-slate-100"
+            >
               <strong>Copiloto:</strong> <span data-testid="copilot-reply">{turn.answer.reply}</span>
               {turn.answer.sources.length > 0 && (
-                <ul aria-label="Fuentes">
+                <ul aria-label="Fuentes" className="mt-2 list-disc pl-5 text-slate-300">
                   {turn.answer.sources.map((s) => (
                     <li key={s.runbook_id} data-testid="copilot-source">
                       Runbook: {s.title} ({s.service_name})
@@ -53,9 +70,14 @@ export function CopilotPanel() {
                 </ul>
               )}
               {turn.answer.actions.length > 0 && (
-                <ul aria-label="Acciones">
+                <ul aria-label="Acciones" className="mt-2 flex flex-col gap-1">
                   {turn.answer.actions.map((a, j) => (
-                    <li key={j} data-testid="copilot-action" data-ok={a.ok}>
+                    <li
+                      key={j}
+                      data-testid="copilot-action"
+                      data-ok={a.ok}
+                      className={a.ok ? 'text-emerald-300' : 'text-red-300'}
+                    >
                       {a.ok ? '✔' : '✖'} {a.tool}: {a.result}
                     </li>
                   ))}
@@ -66,24 +88,32 @@ export function CopilotPanel() {
         )}
       </ol>
       {error && (
-        <p role="alert" data-testid="copilot-error">
+        <Alert role="alert" data-testid="copilot-error" className="mb-3">
           {error}
-        </p>
+        </Alert>
       )}
-      <form onSubmit={(e) => void send(e)}>
-        <label>
+      <form
+        onSubmit={(e) => void send(e)}
+        className="sticky bottom-0 -mx-4 -mb-4 flex flex-wrap items-end gap-3 border-t border-slate-800 bg-slate-900 p-4"
+      >
+        <Field className="min-w-48 flex-1">
           Mensaje
-          <input data-testid="copilot-input" value={message} onChange={(e) => setMessage(e.target.value)} />
-        </label>
-        <button type="submit" data-testid="copilot-send" disabled={pending}>
+          <input
+            data-testid="copilot-input"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            className={controlClass}
+          />
+        </Field>
+        <Button type="submit" data-testid="copilot-send" disabled={pending}>
           Enviar
-        </button>
+        </Button>
         {pending && (
-          <span role="status" data-testid="copilot-pending">
+          <span role="status" data-testid="copilot-pending" className="text-sm text-slate-300">
             Pensando...
           </span>
         )}
       </form>
-    </section>
+    </div>
   )
 }
