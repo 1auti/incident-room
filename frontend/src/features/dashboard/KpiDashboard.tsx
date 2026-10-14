@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { User } from '../../api/auth'
-import { listIncidents, type Incident, type Severity, type State } from '../../api/incidents'
+import { listIncidents, type Incident, type Severity } from '../../api/incidents'
 import { getDashboard, type Dashboard } from '../../api/metrics'
 import { listServices, type Service } from '../../api/services'
 import { Alert } from '../../ui/Alert'
@@ -8,7 +8,8 @@ import { Badge, type BadgeTone } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { Card } from '../../ui/Card'
 import { severityTone, stateTone } from '../incidents/tones'
-import { computeKpis } from './kpis'
+import { stateLabel } from '../labels'
+import { computeKpis, type ActiveState } from './kpis'
 
 interface Props {
   user: User
@@ -17,12 +18,13 @@ interface Props {
 
 interface Data {
   incidents: Incident[]
-  dashboard: Dashboard
+  // null when only the metrics call failed: MTTR and SLA show "Sin datos" and the counts still render.
+  dashboard: Dashboard | null
   services: Service[]
 }
 
 const severities: Severity[] = ['SEV1', 'SEV2', 'SEV3']
-const states: State[] = ['declarado', 'reconocido', 'mitigando', 'resuelto']
+const states: ActiveState[] = ['declarado', 'reconocido', 'mitigando', 'resuelto']
 
 const barColor: Record<BadgeTone, string> = {
   neutral: 'bg-slate-500',
@@ -59,14 +61,16 @@ function KpiCard({
   value,
   testId,
   tone,
+  noData = false,
 }: {
   label: string
   value: string
   testId: string
   tone: BadgeTone | 'accent'
+  noData?: boolean
 }) {
-  // Non-numeric text ("Sin datos") is shown smaller and neutral so it never reads as a good value.
-  const numeric = /^\d/.test(value)
+  // "Sin datos" is shown smaller and neutral so it never reads as a good value.
+  const numeric = !noData
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
       <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
@@ -117,7 +121,8 @@ export function KpiDashboard({ user, onOpenIncident }: Props) {
 
   useEffect(() => {
     let active = true
-    Promise.all([listIncidents(), getDashboard({ preset: '30d' }), listServices()])
+    // The metrics call is allowed to fail on its own; incidents and services are required.
+    Promise.all([listIncidents(), getDashboard({ preset: '30d' }).catch(() => null), listServices()])
       .then(([incidents, dashboard, services]) => {
         if (active) setData({ incidents, dashboard, services })
       })
@@ -151,6 +156,8 @@ export function KpiDashboard({ user, onOpenIncident }: Props) {
   }
 
   const { dashboard, services } = data
+  const mttr = dashboard?.mttr_seconds ?? null
+  const sla = dashboard?.sla_compliance_percent ?? null
   const serviceName = new Map(services.map((s) => [s.id, s.name]))
   const serviceRows: BarRow[] = Object.entries(kpis.byService)
     .map(([id, count]) => ({ key: id, label: serviceName.get(id) ?? id, count, tone: 'info' as const }))
@@ -161,7 +168,12 @@ export function KpiDashboard({ user, onOpenIncident }: Props) {
     count: kpis.bySeverity[s],
     tone: severityTone[s],
   }))
-  const stateRows: BarRow[] = states.map((s) => ({ key: s, label: s, count: kpis.byState[s], tone: stateTone[s] }))
+  const stateRows: BarRow[] = states.map((s) => ({
+    key: s,
+    label: stateLabel[s],
+    count: kpis.byState[s],
+    tone: stateTone[s],
+  }))
 
   return (
     <div data-testid="kpi-dashboard" className="flex flex-col gap-4">
@@ -172,20 +184,28 @@ export function KpiDashboard({ user, onOpenIncident }: Props) {
         <KpiCard label="Sin asignar" value={String(kpis.unassigned)} testId="kpi-unassigned" tone="neutral" />
         <KpiCard
           label="MTTR"
-          value={dashboard.mttr_seconds === null ? 'Sin datos' : formatMinutes(dashboard.mttr_seconds)}
+          value={mttr === null ? 'Sin datos' : formatMinutes(mttr)}
+          noData={mttr === null}
           testId="kpi-mttr"
           tone="neutral"
         />
         <KpiCard
           label="SLA"
-          value={
-            dashboard.sla_compliance_percent === null ? 'Sin datos' : formatPercent(dashboard.sla_compliance_percent)
-          }
+          value={sla === null ? 'Sin datos' : formatPercent(sla)}
+          noData={sla === null}
           testId="kpi-sla"
           tone="success"
         />
       </div>
-      <div className="grid gap-4 lg:grid-cols-3">
+      <p data-testid="kpi-caption" className="-mt-2 text-xs text-slate-500">
+        MTTR y SLA corresponden a los últimos 30 días.
+        {dashboard === null && (
+          <span data-testid="kpi-metrics-notice" className="ml-1 text-amber-300">
+            No se pudieron cargar las métricas.
+          </span>
+        )}
+      </p>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card title="Por severidad">
           <BarList rows={severityRows} testId="kpi-by-severity" empty="Sin incidentes activos" />
         </Card>
@@ -206,11 +226,11 @@ export function KpiDashboard({ user, onOpenIncident }: Props) {
                 key={inc.id}
                 data-testid="kpi-attention-row"
                 data-incident-id={inc.id}
-                className="grid gap-2 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:items-center sm:gap-3 sm:py-2"
+                className="grid grid-cols-1 gap-2 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:items-center sm:gap-3 sm:py-2"
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={severityTone[inc.severity]}>{inc.severity}</Badge>
-                  <Badge tone={stateTone[inc.state]}>{inc.state}</Badge>
+                  <Badge tone={stateTone[inc.state]}>{stateLabel[inc.state]}</Badge>
                 </div>
                 <span className="order-first min-w-0 text-sm break-words text-slate-100 sm:order-none sm:truncate">
                   {inc.title}

@@ -6,6 +6,7 @@ import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
 import { Card } from '../../ui/Card'
 import { Field, controlClass } from '../../ui/Field'
+import { stateLabel } from '../labels'
 import { severityTone, stateTone } from './tones'
 
 const severities: Severity[] = ['SEV1', 'SEV2', 'SEV3']
@@ -23,10 +24,11 @@ interface Loaded {
 }
 
 interface Props {
+  selectedId: string | null
   onOpen: (id: string) => void
 }
 
-export function IncidentBoard({ onOpen }: Props) {
+export function IncidentBoard({ selectedId, onOpen }: Props) {
   const [services, setServices] = useState<Service[]>([])
   const [severity, setSeverity] = useState<Severity | ''>('')
   const [serviceId, setServiceId] = useState('')
@@ -112,7 +114,7 @@ export function IncidentBoard({ onOpen }: Props) {
             <option value="">Todos</option>
             {activeStates.map((s) => (
               <option key={s} value={s}>
-                {s}
+                {stateLabel[s]}
               </option>
             ))}
           </select>
@@ -136,15 +138,18 @@ export function IncidentBoard({ onOpen }: Props) {
               key={inc.id}
               data-testid="board-incident-row"
               data-incident-id={inc.id}
-              className="flex min-h-16 items-center justify-between gap-3 rounded-md border border-slate-700 px-3 py-2"
+              aria-current={inc.id === selectedId ? 'true' : undefined}
+              className={`flex min-h-16 items-center justify-between gap-3 rounded-md border px-3 py-2 ${
+                inc.id === selectedId ? 'border-blue-500 bg-blue-950/40 ring-1 ring-blue-500/60' : 'border-slate-700'
+              }`}
             >
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                <strong className="truncate text-slate-100">{inc.title}</strong>
+                <strong className="min-w-0 text-slate-100 [overflow-wrap:anywhere]">{inc.title}</strong>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={severityTone[inc.severity]} data-testid="board-incident-severity">
                     {inc.severity}
                   </Badge>
-                  <Badge tone={stateTone[inc.state]} data-testid="board-incident-state">
+                  <Badge tone={stateTone[inc.state]} title={stateLabel[inc.state]} data-testid="board-incident-state">
                     {inc.state}
                   </Badge>
                   {inc.escalated_at !== null && (
@@ -152,7 +157,7 @@ export function IncidentBoard({ onOpen }: Props) {
                       Escalado
                     </Badge>
                   )}
-                  <span data-testid="board-incident-service" className="text-sm text-slate-400">
+                  <span data-testid="board-incident-service" className="min-w-0 text-sm break-words text-slate-400">
                     {serviceName(inc.service_id)}
                   </span>
                 </div>

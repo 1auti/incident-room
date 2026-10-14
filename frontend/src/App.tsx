@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AuthGate } from './features/auth/AuthGate'
 import { CopilotPanel } from './features/copilot/CopilotPanel'
 import { KpiDashboard } from './features/dashboard/KpiDashboard'
@@ -13,12 +13,20 @@ import { useView } from './shell/useView'
 import { Drawer } from './ui/Drawer'
 import { Modal } from './ui/Modal'
 
+type Dialog = 'declare' | 'runbooks' | 'copilot'
+
 export default function App() {
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null)
   const [view, setView] = useView()
-  const [declareOpen, setDeclareOpen] = useState(false)
-  const [runbooksOpen, setRunbooksOpen] = useState(false)
-  const [copilotOpen, setCopilotOpen] = useState(false)
+  // One dialog at a time: opening one replaces the others.
+  const [dialog, setDialog] = useState<Dialog | null>(null)
+  const closeDialog = () => setDialog(null)
+  // Navigating (nav buttons, back/forward, a typed hash) closes whatever dialog is open.
+  useEffect(() => {
+    const onHashChange = () => setDialog(null)
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
   // Bumped after a declaration so the board and the KPIs remount and refetch the new incident.
   const [refreshKey, setRefreshKey] = useState(0)
   return (
@@ -28,9 +36,9 @@ export default function App() {
           user={user}
           view={view}
           onNavigate={setView}
-          onDeclare={() => setDeclareOpen(true)}
-          onOpenRunbooks={() => setRunbooksOpen(true)}
-          onOpenCopilot={() => setCopilotOpen(true)}
+          onDeclare={() => setDialog('declare')}
+          onOpenRunbooks={() => setDialog('runbooks')}
+          onOpenCopilot={() => setDialog('copilot')}
         >
           {view === 'dashboard' && (
             <KpiDashboard
@@ -44,9 +52,9 @@ export default function App() {
           )}
           {view === 'incidents' && (
             <div
-              className={`grid items-start gap-4 ${selectedIncidentId !== null ? 'lg:grid-cols-[minmax(0,1fr)_30rem]' : ''}`}
+              className={`grid grid-cols-1 items-start gap-4 ${selectedIncidentId !== null ? 'lg:grid-cols-[minmax(0,1fr)_30rem]' : ''}`}
             >
-              <IncidentBoard key={refreshKey} onOpen={setSelectedIncidentId} />
+              <IncidentBoard key={refreshKey} selectedId={selectedIncidentId} onOpen={setSelectedIncidentId} />
               {selectedIncidentId !== null && (
                 // key: opening another incident starts a fresh detail, so no draft (e.g. a root cause) leaks into it.
                 <IncidentDetail
@@ -59,13 +67,13 @@ export default function App() {
           )}
           {view === 'services' && <ServicesPage user={user} />}
           {view === 'metrics' && <MetricsDashboard />}
-          <Modal open={declareOpen} onClose={() => setDeclareOpen(false)} label="Declarar incidente">
+          <Modal open={dialog === 'declare'} onClose={closeDialog} label="Declarar incidente">
             <DeclareIncidentForm onDeclared={() => setRefreshKey((k) => k + 1)} />
           </Modal>
-          <Drawer open={runbooksOpen} onClose={() => setRunbooksOpen(false)} label="Runbooks">
+          <Drawer open={dialog === 'runbooks'} onClose={closeDialog} label="Runbooks">
             <RunbooksPanel user={user} />
           </Drawer>
-          <Drawer open={copilotOpen} onClose={() => setCopilotOpen(false)} label="Copiloto">
+          <Drawer open={dialog === 'copilot'} onClose={closeDialog} label="Copiloto" keepMounted>
             <CopilotPanel />
           </Drawer>
         </AppShell>

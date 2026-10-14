@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { PanelHeader } from './PanelHeader'
-import { useDialogBehavior } from './useDialogBehavior'
+import { useBackdropClose, useDialogBehavior } from './useDialogBehavior'
 
 interface Props {
   open: boolean
@@ -20,23 +20,24 @@ export function Modal({ open, onClose, label, children }: Props) {
 
 function ModalContent({ onClose, label, children }: Omit<Props, 'open'>) {
   const panelRef = useDialogBehavior(onClose)
+  const backdropProps = useBackdropClose(onClose)
+  const titleId = useId()
   return (
     <div
       data-testid="modal-backdrop"
-      className="fixed inset-0 z-30 flex items-start justify-center overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm"
-      onClick={onClose}
+      className="fixed inset-0 z-30 flex items-start justify-center overflow-x-hidden overflow-y-auto bg-slate-950/80 p-4 backdrop-blur-sm"
+      {...backdropProps}
     >
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label={label}
+        aria-labelledby={titleId}
         tabIndex={-1}
-        className="my-8 w-full max-w-2xl rounded-lg border border-slate-800 bg-slate-900 shadow-2xl outline-none"
-        onClick={(event) => event.stopPropagation()}
+        className="my-8 w-full max-w-2xl min-w-0 rounded-lg border border-slate-800 bg-slate-900 shadow-2xl outline-none"
       >
-        <PanelHeader label={label} onClose={onClose} />
-        <div className="p-4">{children}</div>
+        <PanelHeader label={label} titleId={titleId} onClose={onClose} />
+        <div className="min-w-0 p-4">{children}</div>
       </div>
     </div>
   )

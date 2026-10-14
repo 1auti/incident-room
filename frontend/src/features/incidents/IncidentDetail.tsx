@@ -14,6 +14,7 @@ import { Card } from '../../ui/Card'
 import { Field, controlClass } from '../../ui/Field'
 import { IncidentTimeline } from './IncidentTimeline'
 import { PostmortemSection } from './PostmortemSection'
+import { stateLabel } from '../labels'
 import { severityTone, stateTone } from './tones'
 
 interface Props {
@@ -39,9 +40,12 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
   const [rootCause, setRootCause] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
 
-  // Stacked layout (below lg): bring the freshly opened detail into view.
+  // Stacked layout (below lg): bring the freshly opened detail into view. From lg up the detail sits
+  // beside the board, so there is nothing to scroll to.
   useEffect(() => {
-    rootRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    if (window.matchMedia('(min-width: 1024px)').matches) return
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    rootRef.current?.scrollIntoView({ block: 'nearest', behavior: reduceMotion ? 'auto' : 'smooth' })
   }, [incidentId])
 
   useEffect(() => {
@@ -87,7 +91,7 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
   }
 
   return (
-    <div ref={rootRef} className="lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
+    <div ref={rootRef} className="min-w-0 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
       <Card data-testid="incident-detail">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2>Detalle del incidente</h2>
@@ -108,12 +112,16 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
         )}
         {incident && (
           <div className="mt-3 flex flex-col gap-3 text-sm">
-            <h3 data-testid="incident-detail-title" className="text-base">
+            <h3 data-testid="incident-detail-title" className="text-base [overflow-wrap:anywhere]">
               {incident.title}
             </h3>
             <p className="flex items-center gap-2">
               <span className="w-24 shrink-0 text-slate-400">Estado:</span>
-              <Badge tone={stateTone[incident.state]} data-testid="incident-detail-state">
+              <Badge
+                tone={stateTone[incident.state]}
+                title={stateLabel[incident.state]}
+                data-testid="incident-detail-state"
+              >
                 {incident.state}
               </Badge>
             </p>
@@ -170,7 +178,7 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
                 data-testid="incident-acknowledge"
                 onClick={() => void transition('reconocido')}
               >
-                Acknowledge
+                Reconocer
               </Button>
             )}
             {incident.state === 'reconocido' && (

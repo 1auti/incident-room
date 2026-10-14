@@ -1,8 +1,9 @@
 // Title row shared by Modal and Drawer: the close button lives inside the panel header.
-export function PanelHeader({ label, onClose }: { label: string; onClose: () => void }) {
+// `titleId` is the id the dialog points at with aria-labelledby.
+export function PanelHeader({ label, titleId, onClose }: { label: string; titleId: string; onClose: () => void }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
-      <h2>{label}</h2>
+      <h2 id={titleId}>{label}</h2>
       <button
         type="button"
         aria-label="Cerrar"

@@ -22,7 +22,7 @@ export function Topbar({ user, onDeclare, onOpenRunbooks, onOpenCopilot }: Props
           Copiloto
         </Button>
       </div>
-      <p className="min-w-0 max-w-full truncate text-xs text-slate-400 sm:text-sm">
+      <p className="order-first w-full min-w-0 truncate text-sm text-slate-400 sm:order-none sm:w-auto">
         <span data-testid="current-user-name" className="font-medium text-white">
           {user.name}
         </span>{' '}

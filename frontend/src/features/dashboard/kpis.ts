@@ -1,9 +1,12 @@
 import type { Incident, Severity, State } from '../../api/incidents'
 
+// Active incidents never are "cerrado" (BR-15), so it has no counter.
+export type ActiveState = Exclude<State, 'cerrado'>
+
 export interface Kpis {
   totalActive: number
   bySeverity: Record<Severity, number>
-  byState: Record<State, number>
+  byState: Record<ActiveState, number>
   escalated: number
   unassigned: number
   assignedToMe: number
@@ -13,6 +16,8 @@ export interface Kpis {
 
 const severityRank: Record<Severity, number> = { SEV1: 0, SEV2: 1, SEV3: 2 }
 
+// UI-01 (docs/domain.md, "Criterios de presentación"): "Requieren atención" is a presentation criterion
+// only, not a business rule: active incidents that are SEV1, escalated or unassigned.
 function needsAttention(inc: Incident): boolean {
   return inc.severity === 'SEV1' || inc.escalated_at !== null || inc.assigned_to === null
 }
@@ -30,11 +35,11 @@ function compareUrgency(a: Incident, b: Incident): number {
 
 // Pure counting over the incidents shown on the board (BR-15: active means state is not "cerrado").
 export function computeKpis(incidents: Incident[], userId: string): Kpis {
-  const active = incidents.filter((inc) => inc.state !== 'cerrado')
+  const active = incidents.filter((inc): inc is Incident & { state: ActiveState } => inc.state !== 'cerrado')
   const kpis: Kpis = {
     totalActive: active.length,
     bySeverity: { SEV1: 0, SEV2: 0, SEV3: 0 },
-    byState: { declarado: 0, reconocido: 0, mitigando: 0, resuelto: 0, cerrado: 0 },
+    byState: { declarado: 0, reconocido: 0, mitigando: 0, resuelto: 0 },
     escalated: 0,
     unassigned: 0,
     assignedToMe: 0,

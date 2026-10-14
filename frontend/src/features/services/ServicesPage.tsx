@@ -10,6 +10,7 @@ import {
   type Service,
 } from '../../api/services'
 import { listUsers } from '../../api/users'
+import { criticalityLabel } from '../labels'
 import { Alert } from '../../ui/Alert'
 import { Button } from '../../ui/Button'
 import { Card } from '../../ui/Card'
@@ -38,7 +39,7 @@ function CriticalitySelect(props: {
     >
       {criticalities.map((c) => (
         <option key={c} value={c}>
-          {c}
+          {criticalityLabel[c]}
         </option>
       ))}
     </select>
@@ -100,6 +101,12 @@ export function ServicesPage({ user }: Props) {
     }
   }, [isAdmin])
 
+  // Explains why "Asignar on-call" is disabled: no candidates at all, or none chosen yet.
+  function assignHint(s: Service): string | undefined {
+    if ((oncallChoice[s.id] ?? s.oncall_user_id ?? '') !== '') return undefined
+    return oncallUsers.length === 0 ? 'No hay usuarios con rol on-call para asignar' : 'Seleccioná un on-call primero'
+  }
+
   async function run(action: () => Promise<void>) {
     setError(null)
     try {
@@ -159,102 +166,115 @@ export function ServicesPage({ user }: Props) {
           </Button>
         </form>
       )}
-      <table data-testid="services-list" className={tableClass}>
-        <thead>
-          <tr>
-            <th className={thClass}>Nombre</th>
-            <th className={thClass}>Criticidad</th>
-            <th className={thClass}>On-call</th>
-            {isAdmin && <th className={thClass}>Acciones</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {services.map((s) => (
-            <tr key={s.id} data-testid="service-row" data-service-name={s.name}>
-              <td data-testid="service-name" className={tdClass}>
-                {s.name}
-              </td>
-              <td data-testid="service-criticality" className={tdClass}>
-                {s.criticality}
-              </td>
-              <td data-testid="service-oncall" className={tdClass}>
-                {s.oncall_user_id ?? 'Sin on-call'}
-              </td>
-              {isAdmin && (
-                <td className={tdClass}>
-                  {editingId === s.id ? (
-                    <form
-                      data-testid="service-edit-form"
-                      onSubmit={(e) => submitEdit(e, s.id)}
-                      className="flex flex-wrap items-center gap-2"
-                    >
-                      <input
-                        data-testid="service-edit-name"
-                        aria-label="Nombre del servicio"
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        className={controlClass}
-                      />
-                      <CriticalitySelect
-                        testId="service-edit-criticality"
-                        ariaLabel="Criticidad del servicio"
-                        value={editCriticality}
-                        onChange={setEditCriticality}
-                      />
-                      <Button data-testid="service-edit-submit" type="submit">
-                        Guardar
-                      </Button>
-                      <Button type="button" variant="secondary" onClick={() => setEditingId(null)}>
-                        Cancelar
-                      </Button>
-                    </form>
-                  ) : (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <select
-                        data-testid="service-oncall-select"
-                        aria-label="On-call del servicio"
-                        value={oncallChoice[s.id] ?? s.oncall_user_id ?? ''}
-                        onChange={(e) => setOncallChoice({ ...oncallChoice, [s.id]: e.target.value })}
-                        className={controlClass}
-                      >
-                        <option value="">Seleccionar on-call</option>
-                        {oncallUsers.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name}
-                          </option>
-                        ))}
-                      </select>
-                      <Button
-                        data-testid="service-oncall-submit"
-                        type="button"
-                        disabled={(oncallChoice[s.id] ?? s.oncall_user_id ?? '') === ''}
-                        onClick={() =>
-                          void run(async () => {
-                            await setServiceOncall(s.id, oncallChoice[s.id] ?? s.oncall_user_id ?? '')
-                          })
-                        }
-                      >
-                        Assign on-call
-                      </Button>
-                      <Button data-testid="service-edit" type="button" variant="secondary" onClick={() => startEdit(s)}>
-                        Editar
-                      </Button>
-                      <Button
-                        data-testid="service-delete"
-                        type="button"
-                        variant="dangerGhost"
-                        onClick={() => void run(() => deleteService(s.id))}
-                      >
-                        Borrar
-                      </Button>
-                    </div>
-                  )}
-                </td>
-              )}
+      {isAdmin && oncallUsers.length === 0 && (
+        <p className="mb-3 text-sm text-slate-400">
+          No hay usuarios con rol on-call: asignales ese rol para poder elegir un on-call.
+        </p>
+      )}
+      <div className="overflow-x-auto">
+        <table data-testid="services-list" className={tableClass}>
+          <thead>
+            <tr>
+              <th className={thClass}>Nombre</th>
+              <th className={thClass}>Criticidad</th>
+              <th className={thClass}>On-call</th>
+              {isAdmin && <th className={thClass}>Acciones</th>}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {services.map((s) => (
+              <tr key={s.id} data-testid="service-row" data-service-name={s.name}>
+                <td data-testid="service-name" className={tdClass}>
+                  {s.name}
+                </td>
+                <td data-testid="service-criticality" title={criticalityLabel[s.criticality]} className={tdClass}>
+                  {s.criticality}
+                </td>
+                <td data-testid="service-oncall" className={tdClass}>
+                  {s.oncall_user_id ?? 'Sin on-call'}
+                </td>
+                {isAdmin && (
+                  <td className={tdClass}>
+                    {editingId === s.id ? (
+                      <form
+                        data-testid="service-edit-form"
+                        onSubmit={(e) => submitEdit(e, s.id)}
+                        className="flex flex-wrap items-center gap-2"
+                      >
+                        <input
+                          data-testid="service-edit-name"
+                          aria-label="Nombre del servicio"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          className={controlClass}
+                        />
+                        <CriticalitySelect
+                          testId="service-edit-criticality"
+                          ariaLabel="Criticidad del servicio"
+                          value={editCriticality}
+                          onChange={setEditCriticality}
+                        />
+                        <Button data-testid="service-edit-submit" type="submit">
+                          Guardar
+                        </Button>
+                        <Button type="button" variant="secondary" onClick={() => setEditingId(null)}>
+                          Cancelar
+                        </Button>
+                      </form>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          data-testid="service-oncall-select"
+                          aria-label="On-call del servicio"
+                          value={oncallChoice[s.id] ?? s.oncall_user_id ?? ''}
+                          onChange={(e) => setOncallChoice({ ...oncallChoice, [s.id]: e.target.value })}
+                          className={controlClass}
+                        >
+                          <option value="">Seleccionar on-call</option>
+                          {oncallUsers.map((u) => (
+                            <option key={u.id} value={u.id}>
+                              {u.name}
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          data-testid="service-oncall-submit"
+                          type="button"
+                          disabled={(oncallChoice[s.id] ?? s.oncall_user_id ?? '') === ''}
+                          title={assignHint(s)}
+                          onClick={() =>
+                            void run(async () => {
+                              await setServiceOncall(s.id, oncallChoice[s.id] ?? s.oncall_user_id ?? '')
+                            })
+                          }
+                        >
+                          Asignar on-call
+                        </Button>
+                        <Button
+                          data-testid="service-edit"
+                          type="button"
+                          variant="secondary"
+                          onClick={() => startEdit(s)}
+                        >
+                          Editar
+                        </Button>
+                        <Button
+                          data-testid="service-delete"
+                          type="button"
+                          variant="dangerGhost"
+                          onClick={() => void run(() => deleteService(s.id))}
+                        >
+                          Borrar
+                        </Button>
+                      </div>
+                    )}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Card>
   )
 }

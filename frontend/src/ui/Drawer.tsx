@@ -1,42 +1,46 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { PanelHeader } from './PanelHeader'
-import { useDialogBehavior } from './useDialogBehavior'
+import { useBackdropClose, useDialogBehavior } from './useDialogBehavior'
 
 interface Props {
   open: boolean
   onClose: () => void
   label: string
+  // Keeps the children mounted (hidden) while closed so their state survives, e.g. a conversation.
+  keepMounted?: boolean
   children: ReactNode
 }
 
-export function Drawer({ open, onClose, label, children }: Props) {
-  if (!open) return null
+export function Drawer({ open, onClose, label, keepMounted = false, children }: Props) {
+  if (!open && !keepMounted) return null
   return (
-    <DrawerContent onClose={onClose} label={label}>
+    <DrawerContent open={open} onClose={onClose} label={label}>
       {children}
     </DrawerContent>
   )
 }
 
-function DrawerContent({ onClose, label, children }: Omit<Props, 'open'>) {
-  const panelRef = useDialogBehavior(onClose)
+function DrawerContent({ open, onClose, label, children }: Omit<Props, 'keepMounted'>) {
+  const panelRef = useDialogBehavior(onClose, open)
+  const backdropProps = useBackdropClose(onClose)
+  const titleId = useId()
   return (
     <div
       data-testid="drawer-backdrop"
+      hidden={!open}
       className="fixed inset-0 z-30 bg-slate-950/70 backdrop-blur-sm"
-      onClick={onClose}
+      {...backdropProps}
     >
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
-        aria-label={label}
+        aria-labelledby={titleId}
         tabIndex={-1}
         className="drawer-panel absolute inset-y-0 right-0 flex w-full max-w-lg flex-col border-l border-slate-800 bg-slate-900 shadow-2xl outline-none"
-        onClick={(event) => event.stopPropagation()}
       >
-        <PanelHeader label={label} onClose={onClose} />
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">{children}</div>
+        <PanelHeader label={label} titleId={titleId} onClose={onClose} />
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4">{children}</div>
       </div>
     </div>
   )

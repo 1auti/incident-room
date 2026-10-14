@@ -65,7 +65,7 @@ export function IncidentTimeline({ incidentId, reloadToken }: Props) {
 
   return (
     <section data-testid="timeline" className="mt-4">
-      <h3>Timeline</h3>
+      <h3>Línea de tiempo</h3>
       {current === null && <p role="status">Cargando...</p>}
       {current?.error && (
         <Alert role="alert" data-testid="timeline-error">
