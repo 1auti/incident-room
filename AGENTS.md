@@ -15,7 +15,7 @@ No inventes reglas de negocio.
 2. Planificar: proponer archivos a tocar, tests y riesgos. Esperar aprobación antes de implementar.
 3. Implementar: lo mínimo para cumplir los criterios de aceptación.
 4. Verificar: `make verify` debe pasar (los hooks lo ejecutan automáticamente).
-5. Revisar: subagente `reviewer` sobre el diff; resolver todo lo BLOQUEANTE.
+5. Revisar: subagente `reviewer` sobre el diff; resolver todo lo BLOQUEANTE. Segunda pasada genérica de seguridad y performance con `agent-skills:security-auditor` y `agent-skills:code-reviewer`; no reemplazan al `reviewer` (que verifica spec y BR-xx) y sus hallazgos que contradigan el spec o `docs/domain.md` vuelven al usuario.
 6. Registrar: entrada en `docs/bitacora.md`. Commit `tipo(UC-XX): descripción`.
 
 ## Agentes (`.claude/agents/`)
