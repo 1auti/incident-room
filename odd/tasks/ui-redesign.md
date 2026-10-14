@@ -33,4 +33,4 @@ R3: vitest 3/3 and make verify green (builder report); wired in App.tsx by orche
 R4-R6: make verify exit 0 and make e2e 70 passed (both re-run by orchestrator). Assertions unchanged; uc-04.1 needed goTo services. R7a-R7c polish rounds: make verify 0 and make e2e 74 passed after each (re-run by orchestrator); reviewer + 3 visual QA passes; UI-01 documented in docs/domain.md.
 
 ## Next step
-x
+Done. Pending: user decision on push / PR.
