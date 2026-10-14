@@ -12,8 +12,10 @@
 }
 
 /* Reserve the scrollbar space so opening a detail does not shift the layout sideways. */
-html {
-  scrollbar-gutter: stable;
+@media (min-width: 768px) {
+  html {
+    scrollbar-gutter: stable;
+  }
 }
 
 @layer base {

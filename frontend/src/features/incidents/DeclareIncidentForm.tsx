@@ -157,7 +157,7 @@ export function DeclareIncidentForm({ onDeclared }: { onDeclared?: () => void })
             ))}
           </select>
         </Field>
-        <p className="text-sm">
+        <p hidden={suggested === ''} className="text-sm">
           Severidad sugerida:{' '}
           <span data-testid="incident-suggested-severity" className="font-semibold">
             {suggested}

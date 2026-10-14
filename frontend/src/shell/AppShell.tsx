@@ -20,7 +20,7 @@ export function AppShell({ user, view, onNavigate, onDeclare, onOpenRunbooks, on
       <Sidebar view={view} onNavigate={onNavigate} />
       <div className="min-w-0 md:pl-56">
         <Topbar user={user} onDeclare={onDeclare} onOpenRunbooks={onOpenRunbooks} onOpenCopilot={onOpenCopilot} />
-        <div className="mx-auto min-w-0 max-w-7xl p-4">{children}</div>
+        <div className="mx-auto min-w-0 max-w-7xl p-4 pb-24 md:pb-4">{children}</div>
       </div>
     </main>
   )

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   changeSeverity,
   getIncident,
@@ -38,15 +38,6 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
   // Bumped after every change to the incident so the timeline shows its new event.
   const [timelineReloads, setTimelineReloads] = useState(0)
   const [rootCause, setRootCause] = useState('')
-  const rootRef = useRef<HTMLDivElement>(null)
-
-  // Stacked layout (below lg): bring the freshly opened detail into view. From lg up the detail sits
-  // beside the board, so there is nothing to scroll to.
-  useEffect(() => {
-    if (window.matchMedia('(min-width: 1024px)').matches) return
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    rootRef.current?.scrollIntoView({ block: 'nearest', behavior: reduceMotion ? 'auto' : 'smooth' })
-  }, [incidentId])
 
   useEffect(() => {
     let active = true
@@ -90,8 +81,9 @@ export function IncidentDetail({ incidentId, onClose }: Props) {
     }
   }
 
+  // Below lg the detail is a full-screen sheet over the list (close button inside); from lg it sits beside the board.
   return (
-    <div ref={rootRef} className="min-w-0 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
+    <div className="fixed inset-0 z-20 min-w-0 overflow-y-auto bg-slate-950 p-3 lg:inset-auto lg:z-auto lg:bg-transparent lg:p-0 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
       <Card data-testid="incident-detail">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2>Detalle del incidente</h2>

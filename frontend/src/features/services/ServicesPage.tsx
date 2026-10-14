@@ -23,6 +23,10 @@ interface Props {
 
 const criticalities: Criticality[] = ['critica', 'importante', 'estandar']
 
+// Below md each row is a stacked card whose cells carry their column name; from md it is a regular table.
+const cellClass =
+  'block before:mr-2 before:text-xs before:text-slate-400 before:content-[attr(data-label)] md:table-cell md:before:content-none'
+
 function CriticalitySelect(props: {
   testId: string
   value: Criticality
@@ -172,8 +176,8 @@ export function ServicesPage({ user }: Props) {
         </p>
       )}
       <div className="overflow-x-auto">
-        <table data-testid="services-list" className={tableClass}>
-          <thead>
+        <table data-testid="services-list" className={`${tableClass} block md:table`}>
+          <thead className="hidden md:table-header-group">
             <tr>
               <th className={thClass}>Nombre</th>
               <th className={thClass}>Criticidad</th>
@@ -181,20 +185,30 @@ export function ServicesPage({ user }: Props) {
               {isAdmin && <th className={thClass}>Acciones</th>}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block md:table-row-group">
             {services.map((s) => (
-              <tr key={s.id} data-testid="service-row" data-service-name={s.name}>
-                <td data-testid="service-name" className={tdClass}>
+              <tr
+                key={s.id}
+                data-testid="service-row"
+                data-service-name={s.name}
+                className="mb-3 block rounded-md border border-slate-800 p-2 md:mb-0 md:table-row md:rounded-none md:border-0 md:p-0"
+              >
+                <td data-testid="service-name" data-label="Nombre" className={`${tdClass} ${cellClass}`}>
                   {s.name}
                 </td>
-                <td data-testid="service-criticality" title={criticalityLabel[s.criticality]} className={tdClass}>
+                <td
+                  data-testid="service-criticality"
+                  title={criticalityLabel[s.criticality]}
+                  data-label="Criticidad"
+                  className={`${tdClass} ${cellClass}`}
+                >
                   {s.criticality}
                 </td>
-                <td data-testid="service-oncall" className={tdClass}>
+                <td data-testid="service-oncall" data-label="On-call" className={`${tdClass} ${cellClass}`}>
                   {s.oncall_user_id ?? 'Sin on-call'}
                 </td>
                 {isAdmin && (
-                  <td className={tdClass}>
+                  <td data-label="Acciones" className={`${tdClass} ${cellClass}`}>
                     {editingId === s.id ? (
                       <form
                         data-testid="service-edit-form"

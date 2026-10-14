@@ -100,7 +100,7 @@ function BarList({ rows, testId, empty }: { rows: BarRow[]; testId: string; empt
       {rows.length === 0 && <p className="text-sm text-slate-400">{empty}</p>}
       {rows.map((r) => (
         <div key={r.key} data-bar-key={r.key} className="flex items-center gap-3 text-sm">
-          <span title={r.label} className="w-28 shrink-0 truncate text-slate-300">
+          <span title={r.label} className="w-28 shrink-0 text-slate-300 [overflow-wrap:anywhere] sm:w-36">
             {r.label}
           </span>
           <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-800">
