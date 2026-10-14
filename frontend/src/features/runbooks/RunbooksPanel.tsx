@@ -4,7 +4,6 @@ import { createRunbook, deleteRunbook, listRunbooks, updateRunbook, type Runbook
 import { listServices, type Service } from '../../api/services'
 import { Alert } from '../../ui/Alert'
 import { Button } from '../../ui/Button'
-import { Card } from '../../ui/Card'
 import { Field, controlClass } from '../../ui/Field'
 
 function messageOf(err: unknown): string {
@@ -36,8 +35,8 @@ export function RunbooksPanel({ user }: Props) {
   }, [])
 
   return (
-    <Card data-testid="runbooks-panel" title="Runbooks">
-      <Field className="mb-3 max-w-xs">
+    <div data-testid="runbooks-panel">
+      <Field className="mb-3">
         Servicio
         <select
           data-testid="runbooks-service-select"
@@ -55,7 +54,7 @@ export function RunbooksPanel({ user }: Props) {
       </Field>
       {/* key: another service starts a fresh list and form, so no draft leaks between services. */}
       {serviceId !== '' && <ServiceRunbooks key={serviceId} serviceId={serviceId} isAdmin={user.role === 'admin'} />}
-    </Card>
+    </div>
   )
 }
 
@@ -159,7 +158,12 @@ function ServiceRunbooks({ serviceId, isAdmin }: ServiceRunbooksProps) {
                 <Button type="button" variant="secondary" data-testid="runbook-edit" onClick={() => startEdit(rb)}>
                   Editar
                 </Button>
-                <Button type="button" variant="danger" data-testid="runbook-delete" onClick={() => void remove(rb.id)}>
+                <Button
+                  type="button"
+                  variant="dangerGhost"
+                  data-testid="runbook-delete"
+                  onClick={() => void remove(rb.id)}
+                >
                   Eliminar
                 </Button>
               </div>

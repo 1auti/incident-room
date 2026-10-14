@@ -41,6 +41,7 @@ export function RegisterForm({ onRegistered, onShowLogin }: Props) {
         Nombre
         <input
           data-testid="register-name"
+          autoComplete="name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           required
@@ -51,6 +52,7 @@ export function RegisterForm({ onRegistered, onShowLogin }: Props) {
         Email
         <input
           data-testid="register-email"
+          autoComplete="email"
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -62,6 +64,7 @@ export function RegisterForm({ onRegistered, onShowLogin }: Props) {
         Contraseña
         <input
           data-testid="register-password"
+          autoComplete="new-password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

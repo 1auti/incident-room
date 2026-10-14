@@ -65,10 +65,17 @@ function KpiCard({
   testId: string
   tone: BadgeTone | 'accent'
 }) {
+  // Non-numeric text ("Sin datos") is shown smaller and neutral so it never reads as a good value.
+  const numeric = /^\d/.test(value)
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900 p-4 shadow-sm">
       <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
-      <p data-testid={testId} className={`mt-2 text-4xl font-semibold tabular-nums ${valueColor[tone]}`}>
+      <p
+        data-testid={testId}
+        className={`mt-2 flex h-10 items-center tabular-nums ${
+          numeric ? `text-4xl font-semibold ${valueColor[tone]}` : 'text-base font-medium text-slate-400'
+        }`}
+      >
         {value}
       </p>
     </div>
@@ -89,7 +96,9 @@ function BarList({ rows, testId, empty }: { rows: BarRow[]; testId: string; empt
       {rows.length === 0 && <p className="text-sm text-slate-400">{empty}</p>}
       {rows.map((r) => (
         <div key={r.key} data-bar-key={r.key} className="flex items-center gap-3 text-sm">
-          <span className="w-28 shrink-0 truncate text-slate-300">{r.label}</span>
+          <span title={r.label} className="w-28 shrink-0 truncate text-slate-300">
+            {r.label}
+          </span>
           <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-800">
             <div className={`h-full rounded-full ${barColor[r.tone]}`} style={{ width: `${(r.count / max) * 100}%` }} />
           </div>
@@ -197,15 +206,23 @@ export function KpiDashboard({ user, onOpenIncident }: Props) {
                 key={inc.id}
                 data-testid="kpi-attention-row"
                 data-incident-id={inc.id}
-                className="flex flex-wrap items-center gap-3 py-2"
+                className="grid gap-2 py-3 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:items-center sm:gap-3 sm:py-2"
               >
-                <Badge tone={severityTone[inc.severity]}>{inc.severity}</Badge>
-                <Badge tone={stateTone[inc.state]}>{inc.state}</Badge>
-                <span className="min-w-0 flex-1 truncate text-sm text-slate-100">{inc.title}</span>
-                <span className="text-xs text-slate-400">{serviceName.get(inc.service_id) ?? inc.service_id}</span>
-                <Button variant="secondary" data-testid="kpi-attention-open" onClick={() => onOpenIncident(inc.id)}>
-                  Abrir
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={severityTone[inc.severity]}>{inc.severity}</Badge>
+                  <Badge tone={stateTone[inc.state]}>{inc.state}</Badge>
+                </div>
+                <span className="order-first min-w-0 text-sm break-words text-slate-100 sm:order-none sm:truncate">
+                  {inc.title}
+                </span>
+                <div className="flex items-center justify-between gap-3 sm:contents">
+                  <span className="min-w-0 truncate text-xs text-slate-400">
+                    {serviceName.get(inc.service_id) ?? inc.service_id}
+                  </span>
+                  <Button variant="secondary" data-testid="kpi-attention-open" onClick={() => onOpenIncident(inc.id)}>
+                    Abrir
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>

@@ -4,7 +4,6 @@ import { listServices, type Service } from '../../api/services'
 import { Alert } from '../../ui/Alert'
 import { Badge } from '../../ui/Badge'
 import { Button } from '../../ui/Button'
-import { Card } from '../../ui/Card'
 import { Field, controlClass } from '../../ui/Field'
 import { severityTone, stateTone } from './tones'
 
@@ -85,7 +84,7 @@ export function DeclareIncidentForm({ onDeclared }: { onDeclared?: () => void })
   const declared = result?.incident
 
   return (
-    <Card title="Declarar incidente">
+    <div data-testid="declare-incident-panel">
       <form data-testid="declare-incident-form" onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
         <Field>
           Título
@@ -171,25 +170,27 @@ export function DeclareIncidentForm({ onDeclared }: { onDeclared?: () => void })
       {result && declared && (
         <div
           data-testid="declared-incident"
-          className="mt-3 flex flex-col gap-1 border-t border-slate-200 pt-3 dark:border-slate-700"
+          className="mt-4 flex flex-col gap-2 rounded-md border border-emerald-800 bg-emerald-950/30 p-3 text-sm"
         >
-          <h3>{declared.title}</h3>
-          <p>
-            Estado:{' '}
+          <p className="text-xs font-semibold tracking-wide text-emerald-300 uppercase">Incidente declarado</p>
+          <h3 className="text-base">{declared.title}</h3>
+          <p className="flex items-center gap-2">
+            <span className="w-24 shrink-0 text-slate-400">Estado:</span>
             <Badge tone={stateTone[declared.state]} data-testid="incident-state">
               {declared.state}
             </Badge>
           </p>
-          <p>
-            Severidad:{' '}
+          <p className="flex items-center gap-2">
+            <span className="w-24 shrink-0 text-slate-400">Severidad:</span>
             <Badge tone={severityTone[declared.severity]} data-testid="incident-severity">
               {declared.severity}
             </Badge>
           </p>
-          <p>
-            Asignado a: <span data-testid="incident-assigned-to">{declared.assigned_to ?? 'Sin asignar'}</span>
+          <p className="flex items-center gap-2">
+            <span className="w-24 shrink-0 text-slate-400">Asignado a:</span>
+            <span data-testid="incident-assigned-to">{declared.assigned_to ?? 'Sin asignar'}</span>
           </p>
-          <ul className="list-disc pl-5 text-sm">
+          <ul className="list-disc pl-5 text-slate-300">
             {result.timeline.map((ev) => (
               <li key={ev.id} data-testid="timeline-event" data-event-type={ev.type}>
                 {ev.type}
@@ -198,6 +199,6 @@ export function DeclareIncidentForm({ onDeclared }: { onDeclared?: () => void })
           </ul>
         </div>
       )}
-    </Card>
+    </div>
   )
 }

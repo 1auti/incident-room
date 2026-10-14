@@ -2,7 +2,6 @@ import { useState, type FormEvent } from 'react'
 import { askCopilot, type CopilotAnswer } from '../../api/copilot'
 import { Alert } from '../../ui/Alert'
 import { Button } from '../../ui/Button'
-import { Card } from '../../ui/Card'
 import { Field, controlClass } from '../../ui/Field'
 
 function messageOf(err: unknown): string {
@@ -36,15 +35,20 @@ export function CopilotPanel() {
   }
 
   return (
-    <Card data-testid="copilot-panel" title="Copiloto">
-      <ol className="mb-3 flex flex-col gap-2">
+    <div data-testid="copilot-panel" className="flex min-h-full flex-col">
+      {turns.length === 0 && (
+        <p className="mb-3 rounded-md border border-dashed border-slate-700 p-3 text-sm text-slate-400">
+          Preguntale al copiloto por un incidente, un runbook o una acción.
+        </p>
+      )}
+      <ol className="mb-3 flex flex-1 flex-col gap-2">
         {turns.map((turn, i) =>
           turn.role === 'user' ? (
             <li
               key={i}
               data-testid="copilot-message"
               data-role="user"
-              className="max-w-[85%] self-end rounded-lg bg-blue-950 px-3 py-2 text-sm text-slate-100 dark:bg-blue-950"
+              className="max-w-[85%] self-end rounded-lg bg-blue-950 px-3 py-2 text-sm text-slate-100"
             >
               <strong>Vos:</strong> {turn.text}
             </li>
@@ -53,11 +57,11 @@ export function CopilotPanel() {
               key={i}
               data-testid="copilot-message"
               data-role="copilot"
-              className="max-w-[85%] self-start rounded-lg bg-slate-100 px-3 py-2 text-sm dark:bg-slate-700"
+              className="max-w-[85%] self-start rounded-lg bg-slate-800 px-3 py-2 text-sm text-slate-100"
             >
               <strong>Copiloto:</strong> <span data-testid="copilot-reply">{turn.answer.reply}</span>
               {turn.answer.sources.length > 0 && (
-                <ul aria-label="Fuentes" className="mt-2 list-disc pl-5 text-slate-600 dark:text-slate-300">
+                <ul aria-label="Fuentes" className="mt-2 list-disc pl-5 text-slate-300">
                   {turn.answer.sources.map((s) => (
                     <li key={s.runbook_id} data-testid="copilot-source">
                       Runbook: {s.title} ({s.service_name})
@@ -72,7 +76,7 @@ export function CopilotPanel() {
                       key={j}
                       data-testid="copilot-action"
                       data-ok={a.ok}
-                      className={a.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}
+                      className={a.ok ? 'text-emerald-300' : 'text-red-300'}
                     >
                       {a.ok ? '✔' : '✖'} {a.tool}: {a.result}
                     </li>
@@ -88,7 +92,10 @@ export function CopilotPanel() {
           {error}
         </Alert>
       )}
-      <form onSubmit={(e) => void send(e)} className="flex flex-wrap items-end gap-3">
+      <form
+        onSubmit={(e) => void send(e)}
+        className="sticky bottom-0 -mx-4 -mb-4 flex flex-wrap items-end gap-3 border-t border-slate-800 bg-slate-900 p-4"
+      >
         <Field className="min-w-48 flex-1">
           Mensaje
           <input
@@ -102,11 +109,11 @@ export function CopilotPanel() {
           Enviar
         </Button>
         {pending && (
-          <span role="status" data-testid="copilot-pending" className="text-sm text-slate-600 dark:text-slate-300">
+          <span role="status" data-testid="copilot-pending" className="text-sm text-slate-300">
             Pensando...
           </span>
         )}
       </form>
-    </Card>
+    </div>
   )
 }

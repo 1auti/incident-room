@@ -27,6 +27,36 @@ function formatPercent(pct: number): string {
   return `${Number(pct.toFixed(1))} %`
 }
 
+const dayFormat = new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
+
+function formatDay(iso: string): string {
+  const date = new Date(iso)
+  return Number.isNaN(date.getTime()) ? iso : dayFormat.format(date)
+}
+
+// The backend range is half-open: the shown end day is the last one included.
+function formatLastDay(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return dayFormat.format(new Date(date.getTime() - 1))
+}
+
+function Tile({ label, testId, value }: { label: string; testId: string; value: string | null }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4">
+      <p className="text-xs font-medium tracking-wide text-slate-400 uppercase">{label}</p>
+      <p
+        data-testid={testId}
+        className={`mt-2 flex h-10 items-center tabular-nums ${
+          value === null ? 'text-base font-medium text-slate-400' : 'text-3xl font-semibold text-slate-100'
+        }`}
+      >
+        {value ?? 'Sin datos'}
+      </p>
+    </div>
+  )
+}
+
 interface Loaded {
   key: string
   dashboard: Dashboard | null
@@ -113,25 +143,27 @@ export function MetricsDashboard() {
       )}
       {dashboard && (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-slate-600 dark:text-slate-300">
-            Período (UTC): <time data-testid="metrics-period-from">{dashboard.from}</time> a{' '}
-            <time data-testid="metrics-period-to">{dashboard.to}</time>
-          </p>
+          <div className="text-sm text-slate-300">
+            <p>
+              Período: <span className="font-medium text-slate-100">{formatDay(dashboard.from)}</span> al{' '}
+              <span className="font-medium text-slate-100">{formatLastDay(dashboard.to)}</span>
+            </p>
+            <p className="text-xs text-slate-500">
+              UTC: <time data-testid="metrics-period-from">{dashboard.from}</time> a{' '}
+              <time data-testid="metrics-period-to">{dashboard.to}</time>
+            </p>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <p className="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700">
-              MTTR:{' '}
-              <span data-testid="metrics-mttr" className="block text-2xl font-semibold">
-                {dashboard.mttr_seconds === null ? 'Sin datos' : formatMinutes(dashboard.mttr_seconds)}
-              </span>
-            </p>
-            <p className="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-700">
-              Cumplimiento de SLA:{' '}
-              <span data-testid="metrics-sla" className="block text-2xl font-semibold">
-                {dashboard.sla_compliance_percent === null
-                  ? 'Sin datos'
-                  : formatPercent(dashboard.sla_compliance_percent)}
-              </span>
-            </p>
+            <Tile
+              label="MTTR"
+              testId="metrics-mttr"
+              value={dashboard.mttr_seconds === null ? null : formatMinutes(dashboard.mttr_seconds)}
+            />
+            <Tile
+              label="Cumplimiento de SLA"
+              testId="metrics-sla"
+              value={dashboard.sla_compliance_percent === null ? null : formatPercent(dashboard.sla_compliance_percent)}
+            />
           </div>
           <table className={tableClass}>
             <thead>

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { PanelHeader } from './PanelHeader'
 import { useDialogBehavior } from './useDialogBehavior'
 
 interface Props {
@@ -31,20 +32,11 @@ function DrawerContent({ onClose, label, children }: Omit<Props, 'open'>) {
         aria-modal="true"
         aria-label={label}
         tabIndex={-1}
-        className="drawer-panel absolute inset-y-0 right-0 w-full max-w-lg overflow-y-auto border-l border-slate-800 bg-slate-900 p-4 shadow-2xl outline-none"
+        className="drawer-panel absolute inset-y-0 right-0 flex w-full max-w-lg flex-col border-l border-slate-800 bg-slate-900 shadow-2xl outline-none"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="mb-2 flex justify-end">
-          <button
-            type="button"
-            aria-label="Cerrar"
-            onClick={onClose}
-            className="rounded-md px-2 py-1 text-slate-400 hover:bg-slate-800 hover:text-white"
-          >
-            ✕
-          </button>
-        </div>
-        {children}
+        <PanelHeader label={label} onClose={onClose} />
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">{children}</div>
       </div>
     </div>
   )

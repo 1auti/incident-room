@@ -242,7 +242,7 @@ export function ServicesPage({ user }: Props) {
                       <Button
                         data-testid="service-delete"
                         type="button"
-                        variant="danger"
+                        variant="dangerGhost"
                         onClick={() => void run(() => deleteService(s.id))}
                       >
                         Borrar

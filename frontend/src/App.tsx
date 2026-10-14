@@ -43,7 +43,9 @@ export default function App() {
             />
           )}
           {view === 'incidents' && (
-            <div className="grid gap-4 lg:grid-cols-2">
+            <div
+              className={`grid items-start gap-4 ${selectedIncidentId !== null ? 'lg:grid-cols-[minmax(0,1fr)_30rem]' : ''}`}
+            >
               <IncidentBoard key={refreshKey} onOpen={setSelectedIncidentId} />
               {selectedIncidentId !== null && (
                 // key: opening another incident starts a fresh detail, so no draft (e.g. a root cause) leaks into it.

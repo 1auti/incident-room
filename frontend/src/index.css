@@ -11,6 +11,11 @@
   color-scheme: dark;
 }
 
+/* Reserve the scrollbar space so opening a detail does not shift the layout sideways. */
+html {
+  scrollbar-gutter: stable;
+}
+
 @layer base {
   body {
     @apply bg-slate-950 text-slate-300 antialiased;

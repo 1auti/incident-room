@@ -48,6 +48,7 @@ export function LoginForm({ onLoggedIn, onShowRegister, notice }: Props) {
         Email
         <input
           data-testid="login-email"
+          autoComplete="email"
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -59,6 +60,7 @@ export function LoginForm({ onLoggedIn, onShowRegister, notice }: Props) {
         Contraseña
         <input
           data-testid="login-password"
+          autoComplete="current-password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

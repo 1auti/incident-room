@@ -136,29 +136,32 @@ export function IncidentBoard({ onOpen }: Props) {
               key={inc.id}
               data-testid="board-incident-row"
               data-incident-id={inc.id}
-              className="flex flex-wrap items-center gap-2 rounded-md border border-slate-200 px-3 py-2 dark:border-slate-700"
+              className="flex min-h-16 items-center justify-between gap-3 rounded-md border border-slate-700 px-3 py-2"
             >
-              <strong>{inc.title}</strong>
-              <Badge tone={severityTone[inc.severity]} data-testid="board-incident-severity">
-                {inc.severity}
-              </Badge>
-              <Badge tone={stateTone[inc.state]} data-testid="board-incident-state">
-                {inc.state}
-              </Badge>
-              <span data-testid="board-incident-service" className="text-sm text-slate-600 dark:text-slate-300">
-                {serviceName(inc.service_id)}
-              </span>
-              {inc.escalated_at !== null && (
-                <Badge tone="danger" data-testid="board-incident-escalated">
-                  Escalado
-                </Badge>
-              )}
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                <strong className="truncate text-slate-100">{inc.title}</strong>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={severityTone[inc.severity]} data-testid="board-incident-severity">
+                    {inc.severity}
+                  </Badge>
+                  <Badge tone={stateTone[inc.state]} data-testid="board-incident-state">
+                    {inc.state}
+                  </Badge>
+                  {inc.escalated_at !== null && (
+                    <Badge tone="danger" data-testid="board-incident-escalated">
+                      Escalado
+                    </Badge>
+                  )}
+                  <span data-testid="board-incident-service" className="text-sm text-slate-400">
+                    {serviceName(inc.service_id)}
+                  </span>
+                </div>
+              </div>
               <Button
                 type="button"
                 variant="secondary"
                 data-testid="board-incident-open"
                 onClick={() => onOpen(inc.id)}
-                className="ml-auto"
               >
                 Ver detalle
               </Button>
