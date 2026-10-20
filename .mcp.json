@@ -2,7 +2,7 @@
   "mcpServers": {
     "postgres": {
       "command": "uvx",
-      "args": ["--with", "mcp<2", "postgres-mcp", "--access-mode=restricted"],
+      "args": ["--overrides", ".mcp-overrides.txt", "--with", "mcp<2", "postgres-mcp==0.3.0", "--access-mode=restricted"],
       "env": { "DATABASE_URI": "${AGENT_RO_DATABASE_URL}" }
     },
     "playwright": {
