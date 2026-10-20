@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	pgUniqueViolation     = "23505"
-	pgForeignKeyViolation = "23503"
-	pgInvalidTextRepresen = "22P02"
-	serviceColumns        = "id, name, criticality, oncall_user_id"
+	pgUniqueViolation           = "23505"
+	pgForeignKeyViolation       = "23503"
+	pgInvalidTextRepresentation = "22P02"
+	serviceColumns              = "id, name, criticality, oncall_user_id"
 )
 
 // PostgresRepository implements Repository on Postgres.
@@ -64,7 +64,7 @@ func (r *PostgresRepository) Create(ctx context.Context, name string, c incident
 func (r *PostgresRepository) Update(ctx context.Context, id, name string, c incident.Criticality) (Service, error) {
 	s, err := scanService(r.pool.QueryRow(ctx,
 		`UPDATE services SET name = $1, criticality = $2 WHERE id = $3 RETURNING `+serviceColumns, name, string(c), id))
-	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresentation {
 		return Service{}, ErrNotFound
 	}
 	if pgErrCode(err) == pgUniqueViolation {
@@ -81,7 +81,7 @@ func (r *PostgresRepository) Update(ctx context.Context, id, name string, c inci
 func (r *PostgresRepository) Delete(ctx context.Context, id string) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM services WHERE id = $1`, id)
 	switch {
-	case pgErrCode(err) == pgInvalidTextRepresen:
+	case pgErrCode(err) == pgInvalidTextRepresentation:
 		return ErrNotFound
 	case pgErrCode(err) == pgForeignKeyViolation:
 		return ErrInUse
@@ -98,7 +98,7 @@ func (r *PostgresRepository) Delete(ctx context.Context, id string) error {
 func (r *PostgresRepository) HasIncidents(ctx context.Context, id string) (bool, error) {
 	var has bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM incidents WHERE service_id = $1)`, id).Scan(&has)
-	if pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgInvalidTextRepresentation {
 		return false, ErrNotFound
 	}
 	if err != nil {
@@ -112,7 +112,7 @@ func (r *PostgresRepository) HasIncidents(ctx context.Context, id string) (bool,
 func (r *PostgresRepository) HasRunbooks(ctx context.Context, id string) (bool, error) {
 	var has bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM runbooks WHERE service_id = $1)`, id).Scan(&has)
-	if pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgInvalidTextRepresentation {
 		return false, ErrNotFound
 	}
 	if err != nil {
@@ -132,7 +132,7 @@ func (r *PostgresRepository) SetOncall(ctx context.Context, id, userID string, a
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	current, err := scanService(tx.QueryRow(ctx, `SELECT `+serviceColumns+` FROM services WHERE id = $1 FOR UPDATE`, id))
-	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresentation {
 		return Service{}, ErrNotFound
 	}
 	if err != nil {
@@ -148,7 +148,7 @@ func (r *PostgresRepository) SetOncall(ctx context.Context, id, userID string, a
 	// then sees the service as assigned.
 	var role string
 	err = tx.QueryRow(ctx, `SELECT role FROM users WHERE id = $1 FOR SHARE`, userID).Scan(&role)
-	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresentation {
 		return Service{}, ErrInvalidOncall
 	}
 	if err != nil {
@@ -160,7 +160,7 @@ func (r *PostgresRepository) SetOncall(ctx context.Context, id, userID string, a
 
 	updated, err := scanService(tx.QueryRow(ctx,
 		`UPDATE services SET oncall_user_id = $1 WHERE id = $2 RETURNING `+serviceColumns, userID, id))
-	if pgErrCode(err) == pgForeignKeyViolation || pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgForeignKeyViolation || pgErrCode(err) == pgInvalidTextRepresentation {
 		return Service{}, ErrInvalidOncall
 	}
 	if err != nil {
