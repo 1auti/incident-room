@@ -13,6 +13,7 @@ Navegador ──► Vite dev server (5173) ──proxy /api──► API Go (808
 ```
 
 - **Frontend:** SPA en `frontend/`. En desarrollo el navegador solo habla con Vite, que reenvía `/api` a `API_PROXY_TARGET` (por defecto `http://localhost:8080`) en `frontend/vite.config.ts`.
+- **Producción:** con `STATIC_DIR=frontend/dist` (relativa al directorio desde el que se lanza el binario) el mismo binario sirve también la SPA fuera de `/api` (D7); no hay proxy ni CORS.
 - **Backend:** un único binario, `backend/cmd/api/main.go`, que arma las dependencias por constructor, aplica migraciones al arrancar y sirve la API con `net/http`.
 - **Tarea periódica:** `runEscalation` en `main.go` escala los incidentes con SLA vencido cada `ESCALATION_INTERVAL` (BR-04). Un fallo se loguea y no detiene el servidor.
 - **Base de datos:** PostgreSQL con la extensión `vector`; en desarrollo, `docker-compose.yml` (imagen `pgvector/pgvector:pg17`).
@@ -90,19 +91,18 @@ Estado: vigente. Evita una dependencia para cuatro vistas. Fuente: comentario en
 Estado: vigente. En desarrollo el navegador usa un único origen (Vite) y `/api` se reenvía al backend. Fuente: `frontend/vite.config.ts`.
 
 ### D7. El backend sirve el frontend compilado en producción
-Estado: **Decidido; pendiente de implementar** (aprobado por el usuario el 2026-10-20). Hoy el backend no sirve archivos estáticos.
+Estado: **Implementado** (aprobado el 2026-10-20).
 
 Decisión: en producción el backend Go sirve `frontend/dist` como archivos estáticos, con fallback a `index.html` para toda ruta que no empiece con `/api`. Un solo binario, un solo origen, sin CORS. El proxy de Vite sigue siendo solo de desarrollo (D6).
 
-Implementarla requeriría:
-- Un handler estático en `backend/internal/httpapi` (rutas `/api/...` intactas, fallback a `index.html` para el resto) y su cableado en `New`.
-- Decidir cómo llega `frontend/dist` al binario (`go:embed` o directorio en disco) y un paso de build en el `Makefile` (hoy `make verify` ya ejecuta `npm run build`, pero no empaqueta nada). No existe Dockerfile.
-- Un test del handler: archivo existente, ruta desconocida que cae en `index.html` y `/api/...` inexistente que no cae en `index.html`.
-- Actualizar el README, que hoy describe esto como pendiente.
+Implementación:
+- `httpapi.Static(dir, api)` (`backend/internal/httpapi/static.go`) envuelve el handler de la API: `/api` y `/api/...` pasan a la API sin tocar (un `/api/...` inexistente da el 404 de la API, nunca `index.html`); un archivo regular existente se sirve tal cual; un archivo faltante con extensión (`/assets/x.js`, `/favicon.ico`) responde 404, no `index.html`; cualquier otra ruta sin extensión (o un directorio) cae en `index.html`; otros métodos fuera de `/api` dan 405. `httpapi.New` no cambió.
+- `main.go` lee `STATIC_DIR` (opcional). Si está definido, exige que contenga `index.html` (como archivo regular) y falla al arrancar si no; si está vacío, el comportamiento es el de desarrollo.
+- Caché: `index.html` (directo o como fallback) con `Cache-Control: no-cache`; lo que está bajo `/assets/` (nombres con hash de Vite) con `public, max-age=31536000, immutable`; el resto, sin cabecera extra. Se abre con `os.Open`, que sigue symlinks: `dist` es salida de build de confianza.
+- Los estáticos se sirven desde disco, no con `go:embed`: `embed` no puede leer `../frontend/dist` desde el módulo `backend`. Quedan fuera de alcance un paso de empaquetado en el `Makefile` y un Dockerfile (ver preguntas abiertas).
 
 ## 8. Preguntas abiertas
 
-- ¿`frontend/dist` se embebe en el binario o se sirve desde disco? (parte de D7)
 - ¿Cómo se despliega en producción (Dockerfile, CI)? El `Makefile` indica que hoy no hay CI y no hay Dockerfile en el repo.
 - ¿Hace falta un índice vectorial (HNSW/IVFFlat) en `runbooks.embedding`? Hoy no existe; la búsqueda recorre las filas filtradas.
 - La cookie de sesión lleva `HttpOnly` y `SameSite=Lax`, pero no `Secure` (la bitácora lo registra como hallazgo del reviewer); no está decidido cuándo se activa.

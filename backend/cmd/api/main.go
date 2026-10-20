@@ -5,7 +5,9 @@
 // the first admin is created if none exists, BR-19), SLA_SEV1, SLA_SEV2 and
 // SLA_SEV3 (acknowledgement deadlines as Go durations, defaults 5m, 15m and 60m,
 // BR-03) and ESCALATION_INTERVAL (how often overdue incidents are escalated,
-// default 10s, BR-04). Pending SQL migrations are applied at startup.
+// default 10s, BR-04). STATIC_DIR (optional) is a compiled frontend directory
+// that holds index.html; when set, the server also serves it outside /api.
+// Pending SQL migrations are applied at startup.
 package main
 
 import (
@@ -17,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -66,6 +69,16 @@ func run() error {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		return errors.New("DATABASE_URL is required")
+	}
+	staticDir := os.Getenv("STATIC_DIR")
+	if staticDir != "" {
+		fi, err := os.Stat(filepath.Join(staticDir, "index.html"))
+		if err != nil {
+			return fmt.Errorf("STATIC_DIR %q must contain index.html: %w", staticDir, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("STATIC_DIR %q: index.html must be a regular file", staticDir)
+		}
 	}
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -143,8 +156,15 @@ func run() error {
 	if port == "" {
 		port = "8080"
 	}
+	handler := httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, runbookSvc, postmortemSvc, copilotSvc, logger)
+	if staticDir != "" {
+		handler = httpapi.Static(staticDir, handler)
+		logger.Info("serving API and frontend", "mode", "production", "static_dir", staticDir)
+	} else {
+		logger.Info("serving API only", "mode", "development")
+	}
 	log.Printf("listening on :%s", port)
-	srv := &http.Server{Addr: ":" + port, Handler: httpapi.New(userSvc, authSvc, serviceMgr, incidentSvc, timelineSvc, metricsSvc, runbookSvc, postmortemSvc, copilotSvc, logger), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: ":" + port, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
 
