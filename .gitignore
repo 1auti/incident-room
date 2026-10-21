@@ -8,3 +8,4 @@ dist/
 /backend/bin/
 test-results/
 playwright-report/
+.atl
