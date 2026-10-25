@@ -78,7 +78,11 @@ export function CopilotPanel() {
                       data-ok={a.ok}
                       className={a.ok ? 'text-emerald-300' : 'text-red-300'}
                     >
-                      {a.ok ? '✔' : '✖'} {a.tool}: {a.result}
+                      {a.ok ? '✔' : '✖'} {a.tool}
+                      <details className="text-xs text-slate-400">
+                        <summary className="cursor-pointer">Ver detalle</summary>
+                        <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all">{a.result}</pre>
+                      </details>
                     </li>
                   ))}
                 </ul>
