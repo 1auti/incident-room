@@ -54,7 +54,7 @@ func TestLLM_ProveedorDeChatPorEntorno(t *testing.T) {
 		t.Errorf("ollama overrides = %+v, %v; want %+v", got, err, want)
 	}
 	got, err = chatConfigFromEnv(env(map[string]string{"LLM_PROVIDER": "groq", "GROQ_API_KEY": "gsk"}))
-	if want := (chatConfig{provider: "groq", baseURL: "https://api.groq.com/openai/v1", apiKey: "gsk", model: "llama-3.1-8b-instant"}); err != nil || got != want {
+	if want := (chatConfig{provider: "groq", baseURL: "https://api.groq.com/openai/v1", apiKey: "gsk", model: "openai/gpt-oss-20b"}); err != nil || got != want {
 		t.Errorf("groq = %+v, %v; want %+v", got, err, want)
 	}
 	if strings.Contains(fmt.Sprintf("%v %+v", got, got), "gsk") {

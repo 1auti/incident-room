@@ -50,7 +50,7 @@ const (
 	// Chat (UC-08, UC-10): Ollama by default; Groq through its OpenAI-compatible API.
 	defaultOllamaChatModel = "llama3.1"
 	defaultGroqURL         = "https://api.groq.com/openai/v1"
-	defaultGroqChatModel   = "llama-3.1-8b-instant"
+	defaultGroqChatModel   = "openai/gpt-oss-20b"
 	// Copilot RAG (UC-10): runbooks used per question and their minimum similarity.
 	ragTopK              = 3
 	defaultMinSimilarity = 0.5
