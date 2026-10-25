@@ -314,5 +314,5 @@ Una entrada por iteración relevante. Es la materia prima del README.
   - Se agregó `e2e/ui-shell.spec.ts` (Esc y foco, hash, copiloto).
   - Quedaron textos con el valor crudo donde un e2e los afirma (`incident-state`, `service-criticality`, `timeline-event-type`) y el término "Postmortem" por ser del dominio.
   - Verificación propia: `make verify` en 0 y `make e2e` con 74 passed. La revisión nativa fue omitida por el usuario en cada candidato.
-  - Pendiente: la decisión de push y PR, que son del usuario.
+  - Push y PR de `feat/ui-redesign` realizados por el usuario.
 - **Ajuste a las reglas de contexto:** ninguno.

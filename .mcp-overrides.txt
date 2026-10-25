@@ -1,0 +1,2 @@
+# postgres-mcp 0.3.0 pins pglast==7.2.0, which was removed from PyPI
+pglast==7.20

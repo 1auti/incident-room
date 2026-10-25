@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Levanta la aplicación completa para usarla en el navegador: Postgres descartable, backend y frontend.
 # Ctrl-C detiene todo y elimina el contenedor. Los datos NO persisten entre ejecuciones.
-# No usa .env: si no exportás ADMIN_EMAIL y ADMIN_PASSWORD, el admin de ejemplo lleva una contraseña aleatoria.
+# No usa .env (los secretos van en .secrets/local.env, ver .secrets/local.env.example): si no exportás ADMIN_EMAIL y ADMIN_PASSWORD, el admin de ejemplo lleva una contraseña aleatoria.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,6 +10,14 @@ source "$root/scripts/lib/disposable-pg.sh"
 
 api_port="${DEV_API_PORT:-8080}"
 web_port="${DEV_WEB_PORT:-5173}"
+
+# Secretos locales (p. ej. GROQ_API_KEY): se exportan si existe .secrets/local.env, que git ignora.
+if [ -f "$root/.secrets/local.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$root/.secrets/local.env"
+  set +a
+fi
 
 for tool in go npm curl; do
   command -v "$tool" >/dev/null || { echo "dev: falta '$tool' en el PATH" >&2; exit 1; }
@@ -58,6 +66,10 @@ wait_for() { # url descripción
   return 1
 }
 wait_for "http://127.0.0.1:${api_port}/api/me" "el backend"
+
+# El backend ya aplicó las migraciones: se cargan los datos de ejemplo (si falla, la app sigue sin ellos).
+docker exec -i "$DISPOSABLE_PG_NAME" psql -q -v ON_ERROR_STOP=1 -U postgres -d ir_test \
+  < "$root/scripts/seed.sql" >/dev/null || echo "dev: no se pudieron cargar los datos de ejemplo" >&2
 wait_for "http://127.0.0.1:${web_port}/" "el frontend"
 
 cat <<EOF
@@ -67,7 +79,7 @@ Incident Room está listo:
   API:         http://127.0.0.1:${api_port}
   Admin:       ${ADMIN_EMAIL}
   Contraseña:  ${ADMIN_PASSWORD}${generated_password:+  (aleatoria, solo para esta ejecución)}
-  Base:        Postgres descartable; los datos se pierden al detener (Ctrl-C).
+  Base:        Postgres descartable con datos de ejemplo (scripts/seed.sql); se pierden al detener (Ctrl-C).
 
 EOF
 

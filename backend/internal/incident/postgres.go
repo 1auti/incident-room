@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	pgForeignKeyViolation = "23503"
-	pgInvalidTextRepresen = "22P02"
-	serviceFKName         = "incidents_service_id_fkey"
-	incidentColumns       = `id, title, description, service_id, impact, suggested_severity, severity, state,
+	pgForeignKeyViolation       = "23503"
+	pgInvalidTextRepresentation = "22P02"
+	serviceFKName               = "incidents_service_id_fkey"
+	incidentColumns             = `id, title, description, service_id, impact, suggested_severity, severity, state,
 		declared_by, assigned_to, declared_at, acknowledged_at, escalated_at, root_cause, resolved_at, closed_at`
 )
 
@@ -34,7 +34,7 @@ func (r *PostgresRepository) FindService(ctx context.Context, id string) (Servic
 	var crit string
 	err := r.pool.QueryRow(ctx, `SELECT criticality, oncall_user_id FROM services WHERE id = $1`, id).
 		Scan(&crit, &info.OncallUserID)
-	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresentation {
 		return ServiceInfo{}, ErrServiceNotFound
 	}
 	if err != nil {
@@ -65,7 +65,7 @@ func (r *PostgresRepository) List(ctx context.Context, q ListQuery) ([]Incident,
 	sql += " ORDER BY declared_at DESC, id"
 
 	rows, err := r.pool.Query(ctx, sql, args...)
-	if pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgInvalidTextRepresentation {
 		return nil, ErrInvalidFilter
 	}
 	if err != nil {
@@ -82,7 +82,7 @@ func (r *PostgresRepository) List(ctx context.Context, q ListQuery) ([]Incident,
 		out = append(out, inc)
 	}
 	if err := rows.Err(); err != nil {
-		if pgErrCode(err) == pgInvalidTextRepresen {
+		if pgErrCode(err) == pgInvalidTextRepresentation {
 			return nil, ErrInvalidFilter
 		}
 		return nil, fmt.Errorf("list incidents: %w", err)
@@ -107,7 +107,7 @@ func (r *PostgresRepository) Create(ctx context.Context, inc Incident, events []
 		string(inc.State), inc.DeclaredBy, inc.AssignedTo, inc.DeclaredAt,
 	))
 	// A malformed service id (22P02) is the same client mistake as an unknown one.
-	if isServiceFKViolation(err) || pgErrCode(err) == pgInvalidTextRepresen {
+	if isServiceFKViolation(err) || pgErrCode(err) == pgInvalidTextRepresentation {
 		return Incident{}, nil, ErrServiceNotFound
 	}
 	if err != nil {
@@ -131,7 +131,7 @@ func (r *PostgresRepository) Create(ctx context.Context, inc Incident, events []
 // Get returns one incident; a malformed id is ErrNotFound.
 func (r *PostgresRepository) Get(ctx context.Context, id string) (Incident, error) {
 	inc, err := scanIncident(r.pool.QueryRow(ctx, `SELECT `+incidentColumns+` FROM incidents WHERE id = $1`, id))
-	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresentation {
 		return Incident{}, ErrNotFound
 	}
 	if err != nil {
@@ -207,7 +207,7 @@ func (r *PostgresRepository) UpdateState(ctx context.Context, id string, from, t
 			closed_at = COALESCE($4, closed_at), root_cause = COALESCE($5, root_cause)
 		WHERE id = $6 AND state = $7 RETURNING `+incidentColumns,
 		string(to), upd.AcknowledgedAt, upd.ResolvedAt, upd.ClosedAt, upd.RootCause, id, string(from)))
-	if pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgInvalidTextRepresentation {
 		return Incident{}, ErrNotFound
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -266,7 +266,7 @@ func (r *PostgresRepository) ListEvents(ctx context.Context, incidentID string) 
 		}
 		return v, nil
 	})
-	if pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgInvalidTextRepresentation {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -285,7 +285,7 @@ func (r *PostgresRepository) AppendEvent(ctx context.Context, incidentID string,
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	out, err := InsertEvent(ctx, tx, incidentID, ev)
-	if code := pgErrCode(err); code == pgForeignKeyViolation || code == pgInvalidTextRepresen {
+	if code := pgErrCode(err); code == pgForeignKeyViolation || code == pgInvalidTextRepresentation {
 		return TimelineEvent{}, ErrNotFound
 	}
 	if err != nil {
@@ -316,7 +316,7 @@ func (r *PostgresRepository) ChangeSeverity(ctx context.Context, id string, from
 	inc, err := scanIncident(tx.QueryRow(ctx, `UPDATE incidents SET severity = $1
 		WHERE id = $2 AND severity = $3 AND state = ANY($4) RETURNING `+incidentColumns,
 		string(to), id, string(from), states))
-	if pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgInvalidTextRepresentation {
 		return Incident{}, ErrNotFound
 	}
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -1,5 +1,7 @@
 .env
 .env.*
+/.secrets/*
+!/.secrets/local.env.example
 .claude/settings.local.json
 node_modules/
 dist/
@@ -8,3 +10,4 @@ dist/
 /backend/bin/
 test-results/
 playwright-report/
+.atl

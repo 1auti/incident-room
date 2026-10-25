@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	pgUniqueViolation     = "23505"
-	pgInvalidTextRepresen = "22P02"
-	userColumns           = "id, name, email, role, password_hash, created_at"
+	pgUniqueViolation           = "23505"
+	pgInvalidTextRepresentation = "22P02"
+	userColumns                 = "id, name, email, role, password_hash, created_at"
 )
 
 // PostgresRepository implements Repository on Postgres.
@@ -50,7 +50,7 @@ func (r *PostgresRepository) FindByID(ctx context.Context, id string) (User, err
 
 func (r *PostgresRepository) UpdateRole(ctx context.Context, id string, role Role) error {
 	tag, err := r.pool.Exec(ctx, `UPDATE users SET role = $1 WHERE id = $2`, string(role), id)
-	if pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgInvalidTextRepresentation {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -75,7 +75,7 @@ func (r *PostgresRepository) UpdateRoleGuarded(ctx context.Context, id string, r
 
 	var locked string
 	err = tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&locked)
-	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresentation {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -132,7 +132,7 @@ func (r *PostgresRepository) ListByRole(ctx context.Context, role Role) ([]User,
 func (r *PostgresRepository) IsOncallOfAnyService(ctx context.Context, id string) (bool, error) {
 	var ok bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM services WHERE oncall_user_id = $1)`, id).Scan(&ok)
-	if pgErrCode(err) == pgInvalidTextRepresen {
+	if pgErrCode(err) == pgInvalidTextRepresentation {
 		return false, nil
 	}
 	if err != nil {
@@ -143,7 +143,7 @@ func (r *PostgresRepository) IsOncallOfAnyService(ctx context.Context, id string
 
 func (r *PostgresRepository) find(ctx context.Context, where string, arg any) (User, error) {
 	u, err := scanUser(r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE `+where, arg))
-	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresen {
+	if errors.Is(err, pgx.ErrNoRows) || pgErrCode(err) == pgInvalidTextRepresentation {
 		return User{}, ErrNotFound
 	}
 	if err != nil {

@@ -40,7 +40,10 @@ func RequireAuth(authn Authenticator, logger *slog.Logger) func(http.Handler) ht
 			if err != nil {
 				status := http.StatusUnauthorized
 				if !errors.Is(err, ErrUnauthenticated) {
-					logger.Error("internal error", "err", err)
+					// A canceled request means the client left; nobody reads the response.
+					if !errors.Is(err, context.Canceled) {
+						logger.Error("internal error", "err", err)
+					}
 					status = http.StatusInternalServerError
 				}
 				http.Error(w, http.StatusText(status), status)

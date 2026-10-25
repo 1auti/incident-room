@@ -4,7 +4,7 @@ Plataforma web para declarar, triagear y resolver incidentes de producción, ins
 
 Trabajo Práctico Integrador. El foco de la evaluación es la orquestación del entorno de trabajo (AI Engineering) y la funcionalidad entregada.
 
-> **Estado:** etapa de diseño cerrada (dominio y 10 specs); backend y frontend inicializados, casos de uso en implementación. Las secciones marcadas **(pendiente)** se completan a medida que avanza el desarrollo.
+> **Estado:** etapa de diseño cerrada (dominio y 10 specs); backend y frontend inicializados, casos de uso en implementación. El documento de arquitectura está en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Equipo
 
@@ -56,7 +56,7 @@ Decisiones de diseño que hacen imposibles de violar dos invariantes:
 
 Máquina de estados: `Declarado → Reconocido → Mitigando → Resuelto → Cerrado` (sin reapertura ni saltos). Reglas clave: resolver exige causa raíz (BR-06); cerrar un SEV1 exige postmortem aprobado (BR-07); si vence el SLA sin reconocimiento se escala a los admins (BR-04).
 
-Detalle en [`docs/domain.md`](docs/domain.md) y en las reglas por carpeta (`backend/AGENTS.md`, `frontend/AGENTS.md`). El documento de arquitectura `docs/ARCHITECTURE.md` está **(pendiente)**.
+Detalle en [`docs/domain.md`](docs/domain.md) y en las reglas por carpeta (`backend/AGENTS.md`, `frontend/AGENTS.md`). Componentes, capas y decisiones en [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## AI Engineering
 
@@ -125,7 +125,7 @@ make dev        # levanta la aplicación completa para usarla en el navegador (r
 
 Los runbooks (UC-07) guardan un embedding calculado por Ollama: crear o editar uno responde 503 si Ollama no está disponible. Se configura con `OLLAMA_URL` (por defecto `http://localhost:11434`) y `EMBEDDING_MODEL` (por defecto `nomic-embed-text`, que produce los 768 valores que espera la tabla; otro modelo requiere una migración nueva). Antes de usarlo, `ollama pull nomic-embed-text`. La migración `0007` crea la extensión `vector`, lo que requiere que el rol de la base sea superusuario (lo es en `make dev`, `make e2e` y `make verify-db`); si no lo es, un DBA debe crearla antes con `CREATE EXTENSION vector WITH SCHEMA public`. El borrador del postmortem (UC-08) lo escribe un modelo de chat elegido con `LLM_PROVIDER`: `ollama` (por defecto, usa la API compatible con OpenAI en `OLLAMA_URL/v1` y `LLM_MODEL`, por defecto `llama3.1`; antes, `ollama pull llama3.1`) o `groq` (requiere `GROQ_API_KEY`, que el backend exige al arrancar; `LLM_MODEL` por defecto `llama-3.1-8b-instant` y `LLM_BASE_URL` por defecto `https://api.groq.com/openai/v1`). Los embeddings siempre salen de Ollama. Si el modelo no responde, generar el postmortem responde 503 y no guarda nada. La e2e no usa Ollama real: `e2e/fake-ollama.mjs` responde embeddings y chat en su lugar (para el copiloto, con reglas por palabras clave que imitan un modelo con tool calling).
 
-Los secretos vienen del entorno; el proyecto no usa archivos `.env` en el repositorio. El proxy de Vite (`/api`) solo cubre desarrollo: cómo se sirve la aplicación en producción es una decisión de arquitectura pendiente.
+Los secretos vienen del entorno; el proyecto no usa archivos `.env` en el repositorio. El proxy de Vite (`/api`) solo cubre desarrollo: en producción el backend sirve `frontend/dist` como estáticos, con fallback a `index.html` fuera de `/api`, si se define `STATIC_DIR` (opcional; ejemplo: `STATIC_DIR=frontend/dist` tras `npm run build`). La ruta es relativa al directorio desde el que se lanza el binario; ese directorio debe contener `index.html` (archivo regular) o el backend no arranca; sin la variable, solo sirve la API. Reglas: `/api` y `/api/...` siempre son de la API; un archivo existente se sirve tal cual; un archivo faltante con extensión (`/assets/x.js`, `/favicon.ico`) responde 404; una ruta sin extensión desconocida cae en `index.html`. Caché: `index.html` con `no-cache`; lo que está bajo `/assets/` (nombres con hash de Vite) con `public, max-age=31536000, immutable`; el resto, sin cabecera extra. Ver D7 en `docs/ARCHITECTURE.md`.
 
 ## Estructura del repositorio
 

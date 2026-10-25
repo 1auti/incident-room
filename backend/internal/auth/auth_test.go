@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -207,6 +208,7 @@ func TestRequireAuth_ErrorDeInfraestructura(t *testing.T) {
 	}{
 		{"infrastructure error", errors.New("pq: connection refused to db-secret-host"), http.StatusInternalServerError, true},
 		{"unauthenticated is not an error", auth.ErrUnauthenticated, http.StatusUnauthorized, false},
+		{"client cancellation is not logged", fmt.Errorf("authenticate: %w", context.Canceled), http.StatusInternalServerError, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

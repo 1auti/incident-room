@@ -3,7 +3,7 @@
   "mcp": {
     "postgres": {
       "type": "local",
-      "command": ["uvx", "--with", "mcp<2", "postgres-mcp", "--access-mode=restricted"],
+      "command": ["uvx", "--overrides", ".mcp-overrides.txt", "--with", "mcp<2", "postgres-mcp==0.3.0", "--access-mode=restricted"],
       "environment": { "DATABASE_URI": "{env:AGENT_RO_DATABASE_URL}" }
     },
     "playwright": {
