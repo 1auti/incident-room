@@ -67,6 +67,22 @@ wait_for() { # url descripción
 }
 wait_for "http://127.0.0.1:${api_port}/api/me" "el backend"
 
+# Los embeddings (copiloto y runbooks) siempre salen de Ollama: se levanta si no responde y falta el modelo se baja.
+ollama_url="${OLLAMA_URL:-http://localhost:11434}"
+if ! curl -s -o /dev/null "$ollama_url/api/tags"; then
+  if command -v ollama >/dev/null; then
+    ollama serve >/dev/null 2>&1 &
+    pids+=("$!")
+    wait_for "$ollama_url/api/tags" "Ollama" || true
+  else
+    echo "dev: Ollama no está instalado; el copiloto y los runbooks responderán 503" >&2
+  fi
+fi
+embedding_model="${EMBEDDING_MODEL:-nomic-embed-text}"
+if command -v ollama >/dev/null && ! ollama show "$embedding_model" >/dev/null 2>&1; then
+  ollama pull "$embedding_model" || echo "dev: no se pudo bajar $embedding_model" >&2
+fi
+
 # El backend ya aplicó las migraciones: se cargan los datos de ejemplo (si falla, la app sigue sin ellos).
 docker exec -i "$DISPOSABLE_PG_NAME" psql -q -v ON_ERROR_STOP=1 -U postgres -d ir_test \
   < "$root/scripts/seed.sql" >/dev/null || echo "dev: no se pudieron cargar los datos de ejemplo" >&2
