@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Levanta la aplicación completa para usarla en el navegador: Postgres descartable, backend y frontend.
 # Ctrl-C detiene todo y elimina el contenedor. Los datos NO persisten entre ejecuciones.
-# No usa .env: si no exportás ADMIN_EMAIL y ADMIN_PASSWORD, el admin de ejemplo lleva una contraseña aleatoria.
+# No usa .env (los secretos van en .secrets/local.env, ver .secrets/local.env.example): si no exportás ADMIN_EMAIL y ADMIN_PASSWORD, el admin de ejemplo lleva una contraseña aleatoria.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,6 +10,14 @@ source "$root/scripts/lib/disposable-pg.sh"
 
 api_port="${DEV_API_PORT:-8080}"
 web_port="${DEV_WEB_PORT:-5173}"
+
+# Secretos locales (p. ej. GROQ_API_KEY): se exportan si existe .secrets/local.env, que git ignora.
+if [ -f "$root/.secrets/local.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$root/.secrets/local.env"
+  set +a
+fi
 
 for tool in go npm curl; do
   command -v "$tool" >/dev/null || { echo "dev: falta '$tool' en el PATH" >&2; exit 1; }
