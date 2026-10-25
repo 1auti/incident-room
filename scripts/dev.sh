@@ -66,6 +66,10 @@ wait_for() { # url descripción
   return 1
 }
 wait_for "http://127.0.0.1:${api_port}/api/me" "el backend"
+
+# El backend ya aplicó las migraciones: se cargan los datos de ejemplo (si falla, la app sigue sin ellos).
+docker exec -i "$DISPOSABLE_PG_NAME" psql -q -v ON_ERROR_STOP=1 -U postgres -d ir_test \
+  < "$root/scripts/seed.sql" >/dev/null || echo "dev: no se pudieron cargar los datos de ejemplo" >&2
 wait_for "http://127.0.0.1:${web_port}/" "el frontend"
 
 cat <<EOF
@@ -75,7 +79,7 @@ Incident Room está listo:
   API:         http://127.0.0.1:${api_port}
   Admin:       ${ADMIN_EMAIL}
   Contraseña:  ${ADMIN_PASSWORD}${generated_password:+  (aleatoria, solo para esta ejecución)}
-  Base:        Postgres descartable; los datos se pierden al detener (Ctrl-C).
+  Base:        Postgres descartable con datos de ejemplo (scripts/seed.sql); se pierden al detener (Ctrl-C).
 
 EOF
 
